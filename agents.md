@@ -115,7 +115,7 @@
 
 ## 变更记录
 
-- 2026-07-21：新增 GitHub Actions 四端正式发布链路，版本保持 `1.0.14+19`。`.github/workflows/release.yml` 使用 Flutter `3.44.4`，在 `v*` 标签触发后分别由 Windows、Ubuntu、macOS Runner 构建 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK 和临时签名但未公证的 macOS DMG，最终自动创建 GitHub Release 并上传四个安装包；补交 Android `gradlew`、`gradlew.bat` 与 `gradle-wrapper.jar`，修复全新 Git 检出缺少 Gradle Wrapper、无法启动 Android 构建的问题。首轮四端均进入平台编译后失败，工作流为四个编译步骤增加失败日志尾部注解，便于通过 GitHub Checks API 精确诊断云端环境；未在本地运行测试、未运行 `flutter analyze`，实际四端构建继续由 GitHub Actions 验证。
+- 2026-07-21：新增 GitHub Actions 四端正式发布链路，版本保持 `1.0.14+19`。`.github/workflows/release.yml` 使用 Flutter `3.44.4`，在 `v*` 标签触发后分别由 Windows、Ubuntu、macOS Runner 构建 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK 和临时签名但未公证的 macOS DMG，最终自动创建 GitHub Release 并上传四个安装包；补交 Android `gradlew`、`gradlew.bat` 与 `gradle-wrapper.jar`，修复全新 Git 检出缺少 Gradle Wrapper、无法启动 Android 构建的问题。前两轮四端均进入平台编译后失败，工作流为四个编译步骤增加关键错误日志注解，便于通过 GitHub Checks API 精确诊断云端环境；根据云端 Xcode 错误移除 `MainFlutterWindow` 两个拖放协议方法上无效的 `override`。未在本地运行测试、未运行 `flutter analyze`，实际四端构建继续由 GitHub Actions 验证。
 
 - 2026-07-21：准备首次推送 GitHub 源码仓库，扩展根目录 `.gitignore`，排除项目内 Flutter SDK、Gradle Home/临时运行目录、Android 构建报告、烟测与工具运行数据、LocalLow 本地状态及 `dist` 发布产物；保留源码、四个平台工程、测试、文档和必要资源进入版本控制。发布二进制继续通过 GitHub Release/Actions Artifacts 管理，避免把大文件固化进 Git 历史。仅进行 Git 暂存边界与敏感信息检查，未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.14+19`。
 

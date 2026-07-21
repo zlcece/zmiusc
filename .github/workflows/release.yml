@@ -36,7 +36,13 @@ jobs:
           flutter build windows --release --no-pub 2>&1 | Tee-Object -FilePath $logPath
           $buildExitCode = $LASTEXITCODE
           if ($buildExitCode -ne 0) {
-            Get-Content -LiteralPath $logPath -Tail 80 | ForEach-Object {
+            $diagnosticLines = Get-Content -LiteralPath $logPath |
+              Select-String -Pattern 'error|exception|failed|failure|fatal|could not|not found|undefined|no such file|what went wrong' |
+              Select-Object -Last 8 -ExpandProperty Line
+            if (-not $diagnosticLines) {
+              $diagnosticLines = Get-Content -LiteralPath $logPath -Tail 8
+            }
+            $diagnosticLines | ForEach-Object {
               $line = $_ -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
               Write-Output "::error title=Windows build failed::$line"
             }
@@ -87,10 +93,14 @@ jobs:
           build_exit_code=${PIPESTATUS[0]}
           set -e
           if [ "$build_exit_code" -ne 0 ]; then
+            diagnostic_lines="$(grep -Eai 'error|exception|failed|failure|fatal|could not|not found|undefined|no such file|what went wrong' "$RUNNER_TEMP/android-build.log" | tail -n 8 || true)"
+            if [ -z "$diagnostic_lines" ]; then
+              diagnostic_lines="$(tail -n 8 "$RUNNER_TEMP/android-build.log")"
+            fi
             while IFS= read -r line; do
               line="${line//'%'/'%25'}"
               printf '::error title=Android build failed::%s\n' "$line"
-            done < <(tail -n 80 "$RUNNER_TEMP/android-build.log")
+            done <<< "$diagnostic_lines"
             exit "$build_exit_code"
           fi
           mkdir -p dist
@@ -129,10 +139,14 @@ jobs:
           build_exit_code=${PIPESTATUS[0]}
           set -e
           if [ "$build_exit_code" -ne 0 ]; then
+            diagnostic_lines="$(grep -Eai 'error|exception|failed|failure|fatal|could not|not found|undefined|no such file|what went wrong' "$RUNNER_TEMP/android-dilink-build.log" | tail -n 8 || true)"
+            if [ -z "$diagnostic_lines" ]; then
+              diagnostic_lines="$(tail -n 8 "$RUNNER_TEMP/android-dilink-build.log")"
+            fi
             while IFS= read -r line; do
               line="${line//'%'/'%25'}"
               printf '::error title=Android DiLink build failed::%s\n' "$line"
-            done < <(tail -n 80 "$RUNNER_TEMP/android-dilink-build.log")
+            done <<< "$diagnostic_lines"
             exit "$build_exit_code"
           fi
           mkdir -p dist
@@ -163,10 +177,14 @@ jobs:
           build_exit_code=${PIPESTATUS[0]}
           set -e
           if [ "$build_exit_code" -ne 0 ]; then
+            diagnostic_lines="$(grep -Eai 'error|exception|failed|failure|fatal|could not|not found|undefined|no such file|what went wrong' "$RUNNER_TEMP/macos-build.log" | tail -n 8 || true)"
+            if [ -z "$diagnostic_lines" ]; then
+              diagnostic_lines="$(tail -n 8 "$RUNNER_TEMP/macos-build.log")"
+            fi
             while IFS= read -r line; do
               line="${line//'%'/'%25'}"
               printf '::error title=macOS build failed::%s\n' "$line"
-            done < <(tail -n 80 "$RUNNER_TEMP/macos-build.log")
+            done <<< "$diagnostic_lines"
             exit "$build_exit_code"
           fi
       - name: Package macOS DMG
