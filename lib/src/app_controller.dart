@@ -271,6 +271,9 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       await apiClientFactory(server).ping();
+      await store.saveServers([server]);
+      await store.saveSelectedServerId(server.id);
+      await store.saveLoginServerUrl(normalizedUrl);
       await _clearPlaybackSession();
       await _clearDailyRecommendation();
       _clearPlaylistTrackCache();
@@ -286,9 +289,6 @@ class AppController extends ChangeNotifier {
       searchResults = const LibrarySearchResults();
       libraryOverview = const LibraryOverview();
       localTracks = [];
-      await store.saveLoginServerUrl(normalizedUrl);
-      await store.saveServers(servers);
-      await store.saveSelectedServerId(server.id);
       statusMessage = '登录成功。';
     } catch (error) {
       statusMessage =
@@ -2011,6 +2011,10 @@ class AppController extends ChangeNotifier {
     } finally {
       _suppressPlaybackSessionPersistence = false;
     }
+  }
+
+  Future<void> flushPersistentState() async {
+    await _playbackSessionWrite;
   }
 
   void _handlePlayerPosition(Duration position) {

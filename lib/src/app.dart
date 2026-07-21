@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -7399,6 +7400,8 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   late List<LyricLine> _timeline;
   late List<String> _plainLines;
   int? _lastScrolledIndex;
+  int? _previewIndex;
+  bool _isUserScrolling = false;
 
   @override
   void initState() {
@@ -7446,25 +7449,45 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                     lines: _plainLines,
                     hasLyrics: _lyrics.isNotEmpty,
                   )
-                : StreamBuilder<Duration>(
-                    stream: widget.controller.player.positionStream,
-                    initialData: widget.controller.player.position,
-                    builder: (context, snapshot) {
-                      final position = snapshot.data ?? Duration.zero;
-                      final currentIndex = currentLyricIndex(
-                        _timeline,
-                        position,
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final edgePadding = math.max(
+                        0.0,
+                        (constraints.maxHeight - _lyricLineExtent) / 2,
                       );
-                      _scrollToCurrentLine(currentIndex);
-                      return ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.only(bottom: 72),
-                        itemExtent: _lyricLineExtent,
-                        itemCount: _timeline.length,
-                        itemBuilder: (context, index) {
-                          return _TimedLyricLine(
-                            text: _timeline[index].text,
-                            selected: index == currentIndex,
+                      return StreamBuilder<Duration>(
+                        stream: widget.controller.player.positionStream,
+                        initialData: widget.controller.player.position,
+                        builder: (context, snapshot) {
+                          final position = snapshot.data ?? Duration.zero;
+                          final currentIndex = currentLyricIndex(
+                            _timeline,
+                            position,
+                          );
+                          _scrollToCurrentLine(currentIndex);
+                          final selectedIndex = _previewIndex ?? currentIndex;
+                          return NotificationListener<ScrollNotification>(
+                            onNotification: _handleLyricScroll,
+                            child: Listener(
+                              onPointerSignal: _handleLyricPointerSignal,
+                              child: ListView.builder(
+                                key: const ValueKey('timed-lyrics-list'),
+                                controller: _scrollController,
+                                padding: EdgeInsets.symmetric(
+                                  vertical: edgePadding,
+                                ),
+                                itemExtent: _lyricLineExtent,
+                                itemCount: _timeline.length,
+                                itemBuilder: (context, index) {
+                                  return _TimedLyricLine(
+                                    key: ValueKey('timed-lyric-$index'),
+                                    text: _timeline[index].text,
+                                    selected: index == selectedIndex,
+                                    onTap: () => _selectLyric(index),
+                                  );
+                                },
+                              ),
+                            ),
                           );
                         },
                       );
@@ -7487,10 +7510,14 @@ class _LyricsPanelState extends State<_LyricsPanel> {
               .where((line) => line.isNotEmpty)
               .toList();
     _lastScrolledIndex = null;
+    _previewIndex = null;
+    _isUserScrolling = false;
   }
 
   void _scrollToCurrentLine(int currentIndex) {
-    if (currentIndex < 0 || currentIndex == _lastScrolledIndex) {
+    if (_isUserScrolling ||
+        currentIndex < 0 ||
+        currentIndex == _lastScrolledIndex) {
       return;
     }
     _lastScrolledIndex = currentIndex;
@@ -7498,15 +7525,79 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       if (!_scrollController.hasClients) {
         return;
       }
-      final viewport = _scrollController.position.viewportDimension;
       final maxScrollExtent = _scrollController.position.maxScrollExtent;
-      final offset =
-          currentIndex * _lyricLineExtent - viewport / 2 + _lyricLineExtent / 2;
+      final offset = currentIndex * _lyricLineExtent;
       _scrollController.animateTo(
         offset.clamp(0, maxScrollExtent),
         duration: const Duration(milliseconds: 320),
         curve: Curves.easeOutCubic,
       );
+    });
+  }
+
+  bool _handleLyricScroll(ScrollNotification notification) {
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _isUserScrolling = true;
+      _setPreviewIndex(_centeredLyricIndex(notification.metrics));
+      return false;
+    }
+    if (!_isUserScrolling) {
+      return false;
+    }
+    if (notification is ScrollUpdateNotification ||
+        notification is OverscrollNotification) {
+      _setPreviewIndex(_centeredLyricIndex(notification.metrics));
+    } else if (notification is ScrollEndNotification) {
+      final index = _previewIndex;
+      if (index == null) {
+        _isUserScrolling = false;
+      } else {
+        unawaited(_seekToLyric(index));
+      }
+    }
+    return false;
+  }
+
+  void _handleLyricPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent && !_isUserScrolling) {
+      setState(() => _isUserScrolling = true);
+    }
+  }
+
+  int _centeredLyricIndex(ScrollMetrics metrics) {
+    return (metrics.pixels / _lyricLineExtent).round().clamp(
+      0,
+      _timeline.length - 1,
+    );
+  }
+
+  void _setPreviewIndex(int index) {
+    if (_previewIndex == index) {
+      return;
+    }
+    setState(() => _previewIndex = index);
+  }
+
+  void _selectLyric(int index) {
+    if (!_isUserScrolling || _previewIndex != index) {
+      setState(() {
+        _isUserScrolling = true;
+        _previewIndex = index;
+      });
+    }
+    unawaited(_seekToLyric(index));
+  }
+
+  Future<void> _seekToLyric(int index) async {
+    await widget.controller.player.seek(_timeline[index].time);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isUserScrolling = false;
+      _previewIndex = null;
+      _lastScrolledIndex = null;
     });
   }
 }
@@ -7553,34 +7644,43 @@ class _PlainLyricsList extends StatelessWidget {
 }
 
 class _TimedLyricLine extends StatelessWidget {
-  const _TimedLyricLine({required this.text, required this.selected});
+  const _TimedLyricLine({
+    super.key,
+    required this.text,
+    required this.selected,
+    required this.onTap,
+  });
 
   final String text;
   final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: AnimatedDefaultTextStyle(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-        style:
-            Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: selected
-                  ? colorScheme.primary
-                  : colorScheme.onSurfaceVariant.withValues(alpha: 0.62),
-              fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-              fontSize: selected ? 20 : 17,
-            ) ??
-            TextStyle(
-              color: selected
-                  ? colorScheme.primary
-                  : colorScheme.onSurfaceVariant,
-              fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-            ),
-        child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+    return InkWell(
+      onTap: onTap,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          style:
+              Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: selected
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant.withValues(alpha: 0.62),
+                fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+                fontSize: selected ? 20 : 17,
+              ) ??
+              TextStyle(
+                color: selected
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant,
+                fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+              ),
+          child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+        ),
       ),
     );
   }
@@ -8329,7 +8429,7 @@ class _VolumeControlState extends State<_VolumeControl> {
                 CompositedTransformFollower(
                   link: _layerLink,
                   showWhenUnlinked: false,
-                  offset: const Offset(-6, -142),
+                  offset: const Offset(-6, -212),
                   child: MouseRegion(
                     onEnter: (_) {
                       _overlayHovered = true;
@@ -8348,8 +8448,9 @@ class _VolumeControlState extends State<_VolumeControl> {
                         ),
                         darkAlpha: 0.32,
                         child: SizedBox(
+                          key: const ValueKey('desktop-volume-slider-panel'),
                           width: 44,
-                          height: 126,
+                          height: 196,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [

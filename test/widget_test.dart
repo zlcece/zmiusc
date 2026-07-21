@@ -130,6 +130,13 @@ class _MemoryLibraryStore extends LibraryStore {
   Future<void> deleteServerPassword(String id) async {}
 }
 
+class _FailingAccountLibraryStore extends _MemoryLibraryStore {
+  @override
+  Future<void> saveServers(List<ServerConfig> servers) {
+    throw StateError('secure storage unavailable');
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   PackageInfo.setMockInitialValues(
@@ -201,6 +208,29 @@ void main() {
     expect(controller.servers, isEmpty);
     expect(store.savedServers, isEmpty);
     expect(store.savedSelectedServerId, isNull);
+  });
+
+  test('login stays unauthenticated when account persistence fails', () async {
+    final store = _FailingAccountLibraryStore();
+    final controller = AppController(
+      store: store,
+      player: _RecordingPlayerController(),
+    );
+    controller.apiClientFactory = (server) => SubsonicApiClient(
+      server: server,
+      httpClient: MockClient(
+        (_) async => _subsonicJsonResponse(const <String, Object?>{}),
+      ),
+    );
+
+    await expectLater(
+      controller.login(username: 'demo', password: 'secret'),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(controller.isAuthenticated, isFalse);
+    expect(controller.servers, isEmpty);
+    expect(controller.selectedServerId, isNull);
   });
 
   test('uses normalized URL and username as server id when deserializing', () {
@@ -2756,6 +2786,10 @@ plain text
     );
 
     expect(iconPath, r'D:\App\zmusic-windows-x64\app_icon.ico');
+  });
+
+  test('uses a 16:10 minimum desktop window size', () {
+    expect(desktopMinimumWindowSize, const Size(1088, 680));
   });
 
   testWidgets('keeps the native tray menu stable while playback changes', (
@@ -6587,6 +6621,33 @@ plain text
     expect(player.volume, 0.55);
   });
 
+  testWidgets('desktop volume slider has a usable vertical track', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1264, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AppController(
+      store: LibraryStore(),
+      player: _BufferingPlayerController(),
+    );
+    await tester.pumpWidget(ZmusicApp(controller: controller));
+    await tester.pump();
+
+    final volumeButton = find.byIcon(Icons.volume_up_outlined);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(volumeButton));
+    await tester.pump();
+
+    final panel = find.byKey(const ValueKey('desktop-volume-slider-panel'));
+    expect(panel, findsOneWidget);
+    expect(tester.getSize(panel), const Size(44, 196));
+  });
+
   testWidgets('shows playback queue button in bottom player bar', (
     tester,
   ) async {
@@ -6723,6 +6784,52 @@ plain text
     expect(find.text('Buffering'), findsNothing);
 
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('timed lyrics seek on tap and after manual scrolling', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1264, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const track = Track(
+      id: 'timed-lyrics-track',
+      title: 'Timed lyrics',
+      artist: 'Artist',
+      album: 'Album',
+      streamUrl: 'file:///C:/Music/timed-lyrics.mp3',
+      sourceType: MusicSourceType.localFile,
+      sourceName: 'Local',
+      duration: Duration(minutes: 3),
+      lyrics: '[00:00.00]Line 1\n[00:10.00]Line 2\n[00:20.00]Line 3',
+    );
+    final player = _ScrobblePlayerController()..start(track);
+    final controller = AppController(store: LibraryStore(), player: player);
+
+    await tester.pumpWidget(ZmusicApp(controller: controller));
+    await tester.pump();
+    await tester.tap(find.byTooltip('播放详情'));
+    await tester.pumpAndSettle();
+
+    final lyricsList = find.byKey(const ValueKey('timed-lyrics-list'));
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(lyricsList),
+        scrollDelta: const Offset(0, 55),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(player.soughtPosition, const Duration(seconds: 10));
+
+    await tester.tap(find.byKey(const ValueKey('timed-lyric-1')));
+    await tester.pumpAndSettle();
+    expect(player.soughtPosition, const Duration(seconds: 10));
+
+    await tester.drag(lyricsList, const Offset(0, -70));
+    await tester.pumpAndSettle();
+    expect(player.soughtPosition, const Duration(seconds: 20));
   });
 
   testWidgets('now playing artist and album links open scoped search results', (
@@ -7656,6 +7763,7 @@ class _ScrobblePlayerController extends PlayerController {
   bool _playing = false;
   int _sessionId = 0;
   Duration _position = Duration.zero;
+  Duration? soughtPosition;
 
   @override
   Track? get currentTrack => _track;
@@ -7686,6 +7794,13 @@ class _ScrobblePlayerController extends PlayerController {
   void emitPosition(Duration position) {
     _position = position;
     _positions.add(position);
+  }
+
+  @override
+  Future<void> seek(Duration position) async {
+    soughtPosition = position;
+    emitPosition(position);
+    notifyListeners();
   }
 
   @override

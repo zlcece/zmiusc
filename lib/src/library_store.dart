@@ -9,7 +9,11 @@ import 'settings_models.dart';
 
 class LibraryStore {
   LibraryStore({FlutterSecureStorage? secureStorage})
-    : _secureStorage = secureStorage ?? const FlutterSecureStorage();
+    : _secureStorage =
+          secureStorage ??
+          const FlutterSecureStorage(
+            mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+          );
 
   static const _serversKey = 'servers';
   static const _customTracksKey = 'custom_tracks';

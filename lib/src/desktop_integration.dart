@@ -13,6 +13,7 @@ const MethodChannel _windowsSettingsChannel = MethodChannel(
   'com.zmusic.app/windows_settings',
 );
 const String _macOSTrayIconAsset = 'assets/branding/zmusic_tray.png';
+const Size desktopMinimumWindowSize = Size(1088, 680);
 
 class DesktopIntegration with WindowListener, TrayListener {
   DesktopIntegration(this.controller);
@@ -34,8 +35,8 @@ class DesktopIntegration with WindowListener, TrayListener {
     }
 
     await windowManager.ensureInitialized();
-    if (Platform.isWindows) {
-      await windowManager.setMinimumSize(const Size(1088, 0));
+    if (Platform.isWindows || Platform.isMacOS) {
+      await windowManager.setMinimumSize(desktopMinimumWindowSize);
     }
     windowManager.addListener(this);
     trayManager.addListener(this);
@@ -123,6 +124,7 @@ class DesktopIntegration with WindowListener, TrayListener {
     windowManager.removeListener(this);
     trayManager.removeListener(this);
     unawaited(_destroyTray());
+    await controller.flushPersistentState();
     try {
       await windowManager
           .setPreventClose(false)
