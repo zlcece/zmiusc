@@ -58,6 +58,7 @@
 ## 播放与缓存行为
 
 - Android 通过系统 `MediaSession` 和媒体播放前台服务接收蓝牙耳机/有线耳机的播放、暂停、上一首、下一首控制；应用退到后台且仍有当前曲目时保持媒体会话与播放通知。
+- iOS 最低支持 13.0，使用 `media_kit_libs_ios_audio` 提供原生音频库；`AVAudioSession` 使用 playback 类别并声明 `UIBackgroundModes=audio`，通过 `MPNowPlayingInfoCenter` / `MPRemoteCommandCenter` 发布曲目信息和播放状态，接收锁屏、耳机及系统控制中心的播放、暂停、上一首、下一首控制；来电等音频中断时暂停，系统允许恢复时继续播放，耳机拔出时暂停。
 
 - 播放模式共 4 种：顺序播放、随机播放、单曲循环、列表循环。
 - 顺序播放到最后一首后停止；列表循环才回到第一首。
@@ -92,7 +93,7 @@
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
 - 用户说“打包”时，默认同时执行三件事：升级可见补丁版本和内部 build/versionCode、生成上述三个正式包、根据最终文件生成 `dist/update.json`。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.14+19`。
 - macOS 源码已补齐，但当前默认“打测试包/打包”仍只生成 Windows、Android 通用版和 Android DiLink 三个产物；macOS 构建、签名、公证及产物生成必须在安装 Xcode 与 CocoaPods 的 macOS 主机上单独执行，不能在当前 Windows 主机交叉编译。
-- GitHub Actions 四端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK 和 macOS DMG，四项成功后自动创建 GitHub Release。macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
+- GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
 - `update.json` 的 `updateContent` 必须按 `windows / android / android-dilink` 分平台整理：跨平台改动可以写入全部节点；Windows 安装器、托盘、音量条等 Windows 独有改动只写入 `windows`；Android 通知、MediaSession、手机/平板 UI 等 Android 共用改动只写入 `android` 和 `android-dilink`；DiLink 独有改动只写入 `android-dilink`。清单中的大小、MD5、SHA256 必须在三个最终包完成后重新计算。
 - 普通 `flutter build windows --release` 在本机可能卡住 Visual Studio 生成器阶段。
 - 可用方式是复用 `build/windows/x64-ninja`：
@@ -114,6 +115,8 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-07-21：补齐 iOS 手机端播放与发布基础，版本保持 `1.0.14+19`。新增 `media_kit_libs_ios_audio 1.1.4`、标准 iOS Podfile 及 Pods xcconfig 引用，避免仅提供 podspec 的原生音频库在干净 Runner 中缺失；iOS 原生端使用 `AVAudioSession` playback 类别和后台 audio mode，并通过现有 `com.zmusic.app/media_session` 通道接入锁屏、耳机及控制中心的播放/暂停/上一首/下一首、正在播放元数据、音频中断恢复和耳机拔出暂停；Dart 系统媒体控制和更新平台映射增加 iOS。GitHub Actions 扩展为五端，macOS Runner 实编 iPhoneOS Release 后移除签名内容并封装 `zmusic-ios-unsigned.ipa`，校验版本 `1.0.14+19`、IPA 结构后上传 Artifact 与 Release；该包必须二次自签，不能直接安装。新增 iOS 平台映射、系统媒体支持和 iPhone 窄屏设置回归测试；`flutter pub get` 通过，首次分析发现未跟踪的旧 `build/macos-scaffold-20260721` 模板测试引用无效 `MyApp`，确认其位于项目生成目录且无跟踪文件后移出工作区，最终 `flutter analyze --no-pub` 无问题；完整 `flutter test --no-pub` 首次发现新增 iPhone widget 测试未在 invariant 检查前恢复平台覆盖值，修正清理顺序后 145 项全部通过。GitHub iOS 实编和 IPA 结果待后续验证记录。
 
 - 2026-07-21：完成 GitHub Actions 四端正式发布链路并发布 `1.0.14+19`。`.github/workflows/release.yml` 固定使用 Flutter `3.44.4`，由 Windows、Ubuntu、macOS Runner 并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK 和临时签名但未公证的 macOS DMG；补交 Android Gradle Wrapper，设置仓库补入 Flutter 官方引擎 Maven 地址，Windows Runner 增加 MSVC 14.51 实验性协程兼容宏，macOS 移除两个拖放协议方法上无效的 `override`，失败日志会输出关键 Checks 注解，最终由固定提交的 `softprops/action-gh-release v2.5.0` 更新 GitHub Release。GitHub Actions 第六轮运行 `29803968198` 五个作业全部成功，`v1.0.14` 指向提交 `4e35aed7794610478664373a7ee68b7581177031`；Release 四个资产均返回 HTTP 200：`zmusic-windows-x64.exe` 大小 `16,553,138` 字节、SHA256 `C1082C67885DF2A2217A3633861B0EB18F30A74BD5E40B876266AA3AE39D22D2`，`zmusic-android.apk` 大小 `23,686,302` 字节、SHA256 `CF933B7130906C6839CB534C33D5C724CB4F3FC50961AB466E6EF1C7FB7DE605`，`zmusic-android-dilink.apk` 大小 `23,678,092` 字节、SHA256 `2B3678EB688811333873834E3F472DB1D92631B1FE78874323F53D66C54D6ACA`，`zmusic-macos.dmg` 大小 `32,579,955` 字节、SHA256 `1640C381A32B7F1560BCE3DE110BB1F4DBC5B750D0538D241767CA27C985E86E`。未在本地运行测试或 `flutter analyze`；四端编译、平台封装、Artifact 上传和 Release Assets 发布均由 GitHub Actions 实际验证。
 

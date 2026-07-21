@@ -178,6 +178,9 @@ Future<String> resolveAppUpdatePlatformKey() async {
   if (defaultTargetPlatform == TargetPlatform.macOS) {
     return 'macos';
   }
+  if (defaultTargetPlatform == TargetPlatform.iOS) {
+    return 'ios';
+  }
   if (defaultTargetPlatform == TargetPlatform.android) {
     try {
       final channel = await _androidTaskChannel.invokeMethod<String>(

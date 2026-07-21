@@ -424,6 +424,13 @@ void main() {
     expect(update.releaseTime, '2026-07-14');
   });
 
+  test('resolves the iOS update manifest platform key', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    expect(await resolveAppUpdatePlatformKey(), 'ios');
+  });
+
   test('downloads update files with progress callbacks', () async {
     final downloadUri = Uri.parse(
       'https://file.zuitimes.com/zmusic/1.0.11/zmusic-windows-x64.exe',
@@ -1185,6 +1192,14 @@ void main() {
     final updatedState = calls.last.arguments as Map<Object?, Object?>;
     expect(calls.last.method, 'updateState');
     expect(updatedState['isPlaying'], isFalse);
+  });
+
+  test('enables system media controls on every supported app platform', () {
+    expect(supportsSystemMediaControls(TargetPlatform.windows), isTrue);
+    expect(supportsSystemMediaControls(TargetPlatform.android), isTrue);
+    expect(supportsSystemMediaControls(TargetPlatform.iOS), isTrue);
+    expect(supportsSystemMediaControls(TargetPlatform.macOS), isTrue);
+    expect(supportsSystemMediaControls(TargetPlatform.linux), isFalse);
   });
 
   test('resumes playback after seek only when playback was active', () {
@@ -5373,6 +5388,38 @@ plain text
     await openSettingsTab(tester);
 
     expect(find.text('设置'), findsOneWidget);
+
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('iPhone home and settings use the mobile layout', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AppController(
+      store: LibraryStore(),
+      player: PlayerController(),
+    );
+
+    await tester.pumpWidget(ZmusicApp(controller: controller));
+    await tester.pump();
+
+    expect(
+      tester.getTopLeft(find.byIcon(Icons.settings_rounded).first).dy,
+      lessThan(90),
+    );
+
+    await openSettingsTab(tester);
+
+    expect(find.text('应用 Logo'), findsOneWidget);
+    expect(find.text('背景图'), findsOneWidget);
+    expect(find.text('窗口'), findsNothing);
+    expect(find.text('关闭按钮最小化到托盘'), findsNothing);
+    expect(tester.takeException(), isNull);
 
     debugDefaultTargetPlatformOverride = null;
   });

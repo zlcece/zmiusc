@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -8,12 +6,18 @@ import 'player_controller.dart';
 
 const String systemMediaControlsChannelName = 'com.zmusic.app/media_session';
 
+bool supportsSystemMediaControls(TargetPlatform platform) {
+  return platform == TargetPlatform.windows ||
+      platform == TargetPlatform.android ||
+      platform == TargetPlatform.iOS ||
+      platform == TargetPlatform.macOS;
+}
+
 class SystemMediaControls {
   SystemMediaControls(this.player, {MethodChannel? channel, bool? supported})
     : _channel = channel ?? const MethodChannel(systemMediaControlsChannelName),
       _supported =
-          supported ??
-          (Platform.isWindows || Platform.isAndroid || Platform.isMacOS);
+          supported ?? supportsSystemMediaControls(defaultTargetPlatform);
 
   final PlayerController player;
   final MethodChannel _channel;

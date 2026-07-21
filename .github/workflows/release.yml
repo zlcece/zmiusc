@@ -1,4 +1,4 @@
-name: Build four-platform release
+name: Build five-platform release
 
 on:
   workflow_dispatch:
@@ -205,6 +205,59 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  ios:
+    name: iOS unsigned IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Verify iOS configuration
+        run: |
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' ios/Runner/Info.plist | grep -q audio
+          grep -q 'media_kit_libs_ios_audio' pubspec.lock
+      - name: Build iOS release without signing
+        run: |
+          set +e
+          flutter build ios --release --no-codesign --no-pub 2>&1 | tee "$RUNNER_TEMP/ios-build.log"
+          build_exit_code=${PIPESTATUS[0]}
+          set -e
+          if [ "$build_exit_code" -ne 0 ]; then
+            diagnostic_lines="$(grep -Eai 'error|exception|failed|failure|fatal|could not|not found|undefined|no such file|what went wrong' "$RUNNER_TEMP/ios-build.log" | tail -n 8 || true)"
+            if [ -z "$diagnostic_lines" ]; then
+              diagnostic_lines="$(tail -n 8 "$RUNNER_TEMP/ios-build.log")"
+            fi
+            while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              printf '::error title=iOS build failed::%s\n' "$line"
+            done <<< "$diagnostic_lines"
+            exit "$build_exit_code"
+          fi
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH='build/ios/iphoneos/Runner.app'
+          test -d "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.0.14'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '19'
+          mkdir -p dist/ios/Payload
+          cp -R "$APP_PATH" dist/ios/Payload/
+          rm -rf dist/ios/Payload/Runner.app/_CodeSignature
+          rm -f dist/ios/Payload/Runner.app/embedded.mobileprovision
+          (cd dist/ios && ditto -c -k --sequesterRsrc --keepParent Payload ../zmusic-ios-unsigned.ipa)
+          unzip -t dist/zmusic-ios-unsigned.ipa
+          unzip -l dist/zmusic-ios-unsigned.ipa | grep -q 'Payload/Runner.app/Info.plist'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zmusic-ios-unsigned-1.0.14
+          path: dist/zmusic-ios-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -213,6 +266,7 @@ jobs:
       - android
       - android-dilink
       - macos
+      - ios
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -225,12 +279,13 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Zmusic 1.0.14
-          body: Zmusic 1.0.14+19 four-platform release. The macOS package is ad-hoc signed and not notarized.
+          body: Zmusic 1.0.14+19 five-platform release. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
           fail_on_unmatched_files: true
           files: |
             release/zmusic-windows-x64.exe
             release/zmusic-android.apk
             release/zmusic-android-dilink.apk
             release/zmusic-macos.dmg
+            release/zmusic-ios-unsigned.ipa
         env:
           GITHUB_TOKEN: ${{ github.token }}
