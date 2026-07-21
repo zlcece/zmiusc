@@ -1,0 +1,171 @@
+name: Build four-platform release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: '3.44.4'
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Build Windows release
+        run: flutter build windows --release --no-pub
+      - name: Install NSIS
+        run: choco install nsis --yes --no-progress
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $makeNsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path -LiteralPath $makeNsis)) {
+            $makeNsis = "$env:ProgramFiles\NSIS\makensis.exe"
+          }
+          .\windows\installer\build-installer.ps1 `
+            -RunnerDirectory "$env:GITHUB_WORKSPACE\build\windows\x64\runner\Release" `
+            -MakeNsisPath $makeNsis `
+            -OutputFile "$env:GITHUB_WORKSPACE\dist\zmusic-windows-x64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zmusic-windows-1.0.14
+          path: dist/zmusic-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Build Android release
+        run: |
+          chmod +x android/gradlew
+          flutter build apk --release --no-pub
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk dist/zmusic-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zmusic-android-1.0.14
+          path: dist/zmusic-android.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  android-dilink:
+    name: Android DiLink APK
+    runs-on: ubuntu-latest
+    env:
+      ORG_GRADLE_PROJECT_zmusicDiLinkCompatibility: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Build Android DiLink release
+        run: |
+          chmod +x android/gradlew
+          flutter build apk --release --no-pub
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk dist/zmusic-android-dilink.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zmusic-android-dilink-1.0.14
+          path: dist/zmusic-android-dilink.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Build macOS release
+        run: flutter build macos --release --no-pub
+      - name: Package macOS DMG
+        run: |
+          APP_PATH="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+          mkdir -p dist/dmg
+          cp -R "$APP_PATH" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname Zmusic -srcfolder dist/dmg -format UDZO -ov dist/zmusic-macos.dmg
+          rm -rf dist/dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zmusic-macos-1.0.14
+          path: dist/zmusic-macos.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - windows
+      - android
+      - android-dilink
+      - macos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: zmusic-*
+          path: release
+          merge-multiple: true
+      - name: Create release and upload packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --verify-tag --title "Zmusic 1.0.14" \
+              --notes "Zmusic 1.0.14+19 four-platform release. The macOS package is ad-hoc signed and not notarized."
+          gh release upload "$TAG" release/* --clobber

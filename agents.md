@@ -92,6 +92,7 @@
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
 - 用户说“打包”时，默认同时执行三件事：升级可见补丁版本和内部 build/versionCode、生成上述三个正式包、根据最终文件生成 `dist/update.json`。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.14+19`。
 - macOS 源码已补齐，但当前默认“打测试包/打包”仍只生成 Windows、Android 通用版和 Android DiLink 三个产物；macOS 构建、签名、公证及产物生成必须在安装 Xcode 与 CocoaPods 的 macOS 主机上单独执行，不能在当前 Windows 主机交叉编译。
+- GitHub Actions 四端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK 和 macOS DMG，四项成功后自动创建 GitHub Release。macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
 - `update.json` 的 `updateContent` 必须按 `windows / android / android-dilink` 分平台整理：跨平台改动可以写入全部节点；Windows 安装器、托盘、音量条等 Windows 独有改动只写入 `windows`；Android 通知、MediaSession、手机/平板 UI 等 Android 共用改动只写入 `android` 和 `android-dilink`；DiLink 独有改动只写入 `android-dilink`。清单中的大小、MD5、SHA256 必须在三个最终包完成后重新计算。
 - 普通 `flutter build windows --release` 在本机可能卡住 Visual Studio 生成器阶段。
 - 可用方式是复用 `build/windows/x64-ninja`：
@@ -113,6 +114,8 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-07-21：新增 GitHub Actions 四端正式发布链路，版本保持 `1.0.14+19`。`.github/workflows/release.yml` 使用 Flutter `3.44.4`，在 `v*` 标签触发后分别由 Windows、Ubuntu、macOS Runner 构建 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK 和临时签名但未公证的 macOS DMG，最终自动创建 GitHub Release 并上传四个安装包；补交 Android `gradlew`、`gradlew.bat` 与 `gradle-wrapper.jar`，修复全新 Git 检出缺少 Gradle Wrapper、无法启动 Android 构建的问题。仅执行工作流结构、暂存内容和 Git 检查，未在本地运行测试、未运行 `flutter analyze`，实际四端构建由 GitHub Actions 验证。
 
 - 2026-07-21：准备首次推送 GitHub 源码仓库，扩展根目录 `.gitignore`，排除项目内 Flutter SDK、Gradle Home/临时运行目录、Android 构建报告、烟测与工具运行数据、LocalLow 本地状态及 `dist` 发布产物；保留源码、四个平台工程、测试、文档和必要资源进入版本控制。发布二进制继续通过 GitHub Release/Actions Artifacts 管理，避免把大文件固化进 Git 历史。仅进行 Git 暂存边界与敏感信息检查，未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.14+19`。
 
