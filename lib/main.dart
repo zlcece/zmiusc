@@ -42,7 +42,12 @@ Future<void> main() async {
   }
   _desktopIntegration = DesktopIntegration(controller);
   unawaited(_initializeDesktopIntegration(_desktopIntegration!));
-  _systemMediaControls = SystemMediaControls(controller.player);
+  _systemMediaControls = SystemMediaControls(
+    controller.player,
+    onExitRequested: () async {
+      await _desktopIntegration?.exitApplication();
+    },
+  );
   unawaited(_initializeSystemMediaControls(_systemMediaControls!));
 }
 

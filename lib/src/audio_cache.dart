@@ -72,12 +72,76 @@ class AudioCacheManager {
     return total;
   }
 
-  Future<void> clearCache(AppSettings settings) async {
+  Future<int> clearCache(
+    AppSettings settings, {
+    Set<String> protectedPaths = const {},
+  }) {
+    final operation = _trimQueue.then(
+      (_) => _clearCache(settings, protectedPaths),
+    );
+    _trimQueue = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<int> _clearCache(
+    AppSettings settings,
+    Set<String> protectedPaths,
+  ) async {
     final directory = await _cacheDirectory(settings);
-    if (directory.existsSync()) {
-      await directory.delete(recursive: true);
+    if (!await directory.exists()) {
+      await directory.create(recursive: true);
+      return 0;
     }
-    await directory.create(recursive: true);
+
+    final protectedKeys = protectedPaths.map(_cachePathKey).toSet();
+    final primaryFiles = <File>[];
+    await for (final entity in directory.list(recursive: true)) {
+      if (entity is File && !_isAuxiliaryAudioCacheFile(entity)) {
+        primaryFiles.add(entity);
+      }
+    }
+    for (final file in primaryFiles) {
+      if (protectedKeys.contains(_cachePathKey(file.path))) {
+        continue;
+      }
+      await _tryDeleteCacheFileFamily(file);
+    }
+
+    await for (final entity in directory.list(recursive: true)) {
+      if (entity is! File || !_isAuxiliaryAudioCacheFile(entity)) {
+        continue;
+      }
+      final primaryPath = _primaryAudioCachePath(entity.path);
+      if (protectedKeys.contains(_cachePathKey(primaryPath)) ||
+          await File(primaryPath).exists()) {
+        continue;
+      }
+      await _tryDeleteFile(entity);
+    }
+
+    final directories = <Directory>[];
+    await for (final entity in directory.list(recursive: true)) {
+      if (entity is Directory) {
+        directories.add(entity);
+      }
+    }
+    directories.sort(
+      (left, right) => right.path.length.compareTo(left.path.length),
+    );
+    for (final child in directories) {
+      try {
+        if (!await child.list().isEmpty) {
+          continue;
+        }
+        await child.delete();
+      } on FileSystemException {
+        // A concurrent cache write may have recreated the directory.
+      }
+    }
+    return cacheSize(settings);
   }
 
   Future<void> trimCache(AppSettings settings) async {
@@ -144,9 +208,7 @@ class AudioCacheManager {
       if (total <= targetSize) {
         return;
       }
-      final length = await _cacheFileFamilySize(file);
-      await _deleteCacheFileFamily(file);
-      total -= length;
+      total -= await _tryDeleteCacheFileFamily(file);
     }
   }
 
@@ -214,21 +276,6 @@ Future<void> _discardIncompleteCacheFile(File cacheFile) async {
   await _deleteCacheFileFamily(cacheFile);
 }
 
-Future<int> _cacheFileFamilySize(File cacheFile) async {
-  var total = 0;
-  for (final file in [
-    cacheFile,
-    audioCacheCompletionMarker(cacheFile),
-    _audioCacheMimeFile(cacheFile),
-    audioCachePartialMarker(cacheFile),
-  ]) {
-    if (await file.exists()) {
-      total += await file.length();
-    }
-  }
-  return total;
-}
-
 Future<void> _deleteCacheFileFamily(File cacheFile) async {
   if (await cacheFile.exists()) {
     await cacheFile.delete();
@@ -245,6 +292,53 @@ Future<void> _deleteCacheFileFamily(File cacheFile) async {
   if (await partial.exists()) {
     await partial.delete();
   }
+}
+
+Future<int> _tryDeleteCacheFileFamily(File cacheFile) async {
+  var removedBytes = 0;
+  if (await cacheFile.exists()) {
+    final removed = await _tryDeleteFile(cacheFile);
+    if (await cacheFile.exists()) {
+      return 0;
+    }
+    removedBytes += removed;
+  }
+  for (final file in [
+    audioCacheCompletionMarker(cacheFile),
+    _audioCacheMimeFile(cacheFile),
+    audioCachePartialMarker(cacheFile),
+  ]) {
+    removedBytes += await _tryDeleteFile(file);
+  }
+  return removedBytes;
+}
+
+Future<int> _tryDeleteFile(File file) async {
+  if (!await file.exists()) {
+    return 0;
+  }
+  var length = 0;
+  try {
+    length = await file.length();
+    await file.delete();
+    return length;
+  } on FileSystemException {
+    return 0;
+  }
+}
+
+String _primaryAudioCachePath(String path) {
+  for (final suffix in const ['.complete', '.mime', '.part']) {
+    if (path.endsWith(suffix)) {
+      return path.substring(0, path.length - suffix.length);
+    }
+  }
+  return path;
+}
+
+String _cachePathKey(String path) {
+  final absolute = File(path).absolute.path;
+  return Platform.isWindows ? absolute.toLowerCase() : absolute;
 }
 
 File _audioCachePartialFile(File cacheFile) {

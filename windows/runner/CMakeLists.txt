@@ -11,6 +11,7 @@ add_executable(${BINARY_NAME} WIN32
   "main.cpp"
   "system_media_controls.cpp"
   "utils.cpp"
+  "windows_tray_player_popup.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
@@ -37,8 +38,10 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "_SILENCE_EXPERIMENTAL_COROUTI
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "ole32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "windowsapp.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "windowscodecs.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

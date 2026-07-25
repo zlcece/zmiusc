@@ -63,7 +63,7 @@ jobs:
             -OutputFile "$env:GITHUB_WORKSPACE\dist\zmusic-windows-x64.exe"
       - uses: actions/upload-artifact@v4
         with:
-          name: zmusic-windows-1.0.14
+          name: zmusic-windows-1.0.17
           path: dist/zmusic-windows-x64.exe
           if-no-files-found: error
           retention-days: 14
@@ -107,7 +107,7 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk dist/zmusic-android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: zmusic-android-1.0.14
+          name: zmusic-android-1.0.17
           path: dist/zmusic-android.apk
           if-no-files-found: error
           retention-days: 14
@@ -153,7 +153,7 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk dist/zmusic-android-dilink.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: zmusic-android-dilink-1.0.14
+          name: zmusic-android-dilink-1.0.17
           path: dist/zmusic-android-dilink.apk
           if-no-files-found: error
           retention-days: 14
@@ -200,7 +200,7 @@ jobs:
           rm -rf dist/dmg
       - uses: actions/upload-artifact@v4
         with:
-          name: zmusic-macos-1.0.14
+          name: zmusic-macos-1.0.17
           path: dist/zmusic-macos.dmg
           if-no-files-found: error
           retention-days: 14
@@ -242,8 +242,8 @@ jobs:
         run: |
           APP_PATH='build/ios/iphoneos/Runner.app'
           test -d "$APP_PATH"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.0.14'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '19'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.0.17'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '21'
           mkdir -p dist/ios/Payload
           cp -R "$APP_PATH" dist/ios/Payload/
           rm -rf dist/ios/Payload/Runner.app/_CodeSignature
@@ -253,7 +253,7 @@ jobs:
           unzip -l dist/zmusic-ios-unsigned.ipa | grep -q 'Payload/Runner.app/Info.plist'
       - uses: actions/upload-artifact@v4
         with:
-          name: zmusic-ios-unsigned-1.0.14
+          name: zmusic-ios-unsigned-1.0.17
           path: dist/zmusic-ios-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
@@ -278,8 +278,8 @@ jobs:
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ github.ref_name }}
-          name: Zmusic 1.0.14
-          body: Zmusic 1.0.14+19 five-platform release. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
+          name: Zmusic 1.0.17
+          body: Zmusic 1.0.17+22 five-platform release. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
           fail_on_unmatched_files: true
           files: |
             release/zmusic-windows-x64.exe

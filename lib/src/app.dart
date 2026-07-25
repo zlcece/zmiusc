@@ -122,6 +122,8 @@ class _LoginPageState extends State<_LoginPage> {
   @override
   void initState() {
     super.initState();
+    _usernameController.text = widget.controller.loginUsername;
+    _passwordController.text = widget.controller.loginPassword;
     _serverUrlController = TextEditingController(
       text: widget.controller.loginServerUrl,
     );
@@ -746,7 +748,12 @@ class _HomePageState extends State<HomePage> {
   Widget _buildSearchResultsPage(AppController controller) {
     return _SearchResultsPage(
       controller: controller,
+      searchController: _searchController,
+      searchScope: _searchScope,
       selectedSearchTab: _selectedSearchTab,
+      onSearch: _search,
+      onSearchScopeChanged: (scope) => setState(() => _searchScope = scope),
+      onSuggestionSelected: _openSearchSuggestion,
       onSearchTabChanged: (tab) => setState(() => _selectedSearchTab = tab),
       onSearchLibraryItem: _searchLibraryItem,
       onPreviousSongPage: controller.searchSongPageIndex <= 0
@@ -1061,6 +1068,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _handleControllerChanged() {
+    final playerVolume = widget.controller.player.volume;
+    if (mounted && (_volume - playerVolume).abs() > 0.0001) {
+      setState(() {
+        _volume = playerVolume;
+        if (playerVolume > 0) {
+          _lastNonZeroVolume = playerVolume;
+        }
+      });
+    }
     final isRefreshing = widget.controller.isRefreshingLibrary;
     if (!_wasRefreshingLibrary && isRefreshing) {
       _libraryStatusTimer?.cancel();
@@ -4626,7 +4642,12 @@ class _MusicFunctionTileState extends State<_MusicFunctionTile> {
 class _SearchResultsPage extends StatelessWidget {
   const _SearchResultsPage({
     required this.controller,
+    required this.searchController,
+    required this.searchScope,
     required this.selectedSearchTab,
+    required this.onSearch,
+    required this.onSearchScopeChanged,
+    required this.onSuggestionSelected,
     required this.onSearchTabChanged,
     required this.onSearchLibraryItem,
     required this.onPreviousSongPage,
@@ -4635,7 +4656,12 @@ class _SearchResultsPage extends StatelessWidget {
   });
 
   final AppController controller;
+  final TextEditingController searchController;
+  final LibrarySearchScope searchScope;
   final _SearchResultTab selectedSearchTab;
+  final VoidCallback onSearch;
+  final ValueChanged<LibrarySearchScope> onSearchScopeChanged;
+  final ValueChanged<_RemoteSearchSuggestion> onSuggestionSelected;
   final ValueChanged<_SearchResultTab> onSearchTabChanged;
   final Future<void> Function(LibrarySectionItem item) onSearchLibraryItem;
   final Future<void> Function()? onPreviousSongPage;
@@ -4655,6 +4681,25 @@ class _SearchResultsPage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 700),
+                    child: KeyedSubtree(
+                      key: const ValueKey('search-results-search-bar'),
+                      child: _LibrarySearchBar(
+                        controller: searchController,
+                        scope: searchScope,
+                        isBusy: controller.isBusy,
+                        onScopeChanged: onSearchScopeChanged,
+                        onSearch: onSearch,
+                        onLoadSuggestions: (query, scope) => controller
+                            .searchRemoteSuggestions(query, scope: scope),
+                        onSuggestionSelected: onSuggestionSelected,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
                 if (controller.isBusy) ...[
                   const LinearProgressIndicator(),
                   const SizedBox(height: 14),
@@ -6568,14 +6613,6 @@ class _TrackList extends StatelessWidget {
             title: Text('下一首播放'),
           ),
         ),
-        if (allowManagementActions)
-          const PopupMenuItem(
-            value: 'download',
-            child: ListTile(
-              leading: Icon(Icons.download_outlined),
-              title: Text('下载'),
-            ),
-          ),
         if (allowManagementActions &&
             controller.canAddTrackToRemotePlaylist(track))
           const PopupMenuItem(
@@ -6622,8 +6659,6 @@ class _TrackList extends StatelessWidget {
         if (context.mounted) {
           _showSourceMessage(context, controller.statusMessage ?? '已设为下一首播放。');
         }
-      case 'download':
-        await _downloadTrack(context, track);
       case 'add_to_playlist':
         await _addTrackToPlaylist(context, track);
       case 'edit_metadata':
@@ -6632,26 +6667,6 @@ class _TrackList extends StatelessWidget {
         await onRemoveFromRemotePlaylist?.call(index, track);
       case 'remove':
         await controller.removeCustomTrack(track.id);
-    }
-  }
-
-  Future<void> _downloadTrack(BuildContext context, Track track) async {
-    try {
-      final location = await getSaveLocation(
-        acceptedTypeGroups: [_audioDownloadTypeGroup],
-        suggestedName: suggestedTrackFileName(track),
-      );
-      if (location == null) {
-        return;
-      }
-      await controller.downloadTrack(track, location.path);
-      if (context.mounted) {
-        _showSourceMessage(context, controller.statusMessage ?? '下载完成。');
-      }
-    } catch (error) {
-      if (context.mounted) {
-        _showSourceMessage(context, _formatError(error));
-      }
     }
   }
 
@@ -9170,21 +9185,6 @@ class _SourceManagerActionButtons extends StatelessWidget {
     );
   }
 }
-
-const _audioDownloadTypeGroup = XTypeGroup(
-  label: '音频文件',
-  extensions: [
-    'mp3',
-    'flac',
-    'm4a',
-    'mp4',
-    'wav',
-    'ogg',
-    'opus',
-    'aiff',
-    'ape',
-  ],
-);
 
 const _imageTypeGroup = XTypeGroup(
   label: '图片文件',

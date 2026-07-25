@@ -86,6 +86,20 @@ class DesktopIntegration with WindowListener, TrayListener {
     }
     _isTrayMenuOpen = true;
     try {
+      if (Platform.isWindows) {
+        try {
+          final shown = await _windowsSettingsChannel.invokeMethod<bool>(
+            'showTrayPlayer',
+          );
+          if (shown == true) {
+            return;
+          }
+        } on MissingPluginException {
+          // Fall back to the basic exit menu on older Windows runners.
+        } on PlatformException {
+          // Fall back to the basic exit menu on older Windows runners.
+        }
+      }
       // Windows needs a foreground owner so the native menu closes when it
       // loses focus. The guard also prevents overlapping popup requests.
       // ignore: deprecated_member_use
@@ -207,12 +221,14 @@ class DesktopIntegration with WindowListener, TrayListener {
   Future<void> _applyTrayMenu() async {
     await trayManager.setContextMenu(
       Menu(
-        items: [
-          MenuItem(key: 'show_window', label: '显示窗口'),
-          MenuItem(key: 'toggle_play', label: '播放/暂停'),
-          MenuItem.separator(),
-          MenuItem(key: 'exit_app', label: '退出'),
-        ],
+        items: Platform.isWindows
+            ? [MenuItem(key: 'exit_app', label: '退出')]
+            : [
+                MenuItem(key: 'show_window', label: '显示窗口'),
+                MenuItem(key: 'toggle_play', label: '播放/暂停'),
+                MenuItem.separator(),
+                MenuItem(key: 'exit_app', label: '退出'),
+              ],
       ),
     );
   }

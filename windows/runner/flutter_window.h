@@ -47,6 +47,7 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<SystemMediaControls> system_media_controls_;
 
   void SendSystemMediaCommand(WPARAM command);
+  void SendSystemMediaVolume(WPARAM volume);
   void SendDroppedFiles(WPARAM drop_handle);
   void SendCopiedFilePaths(const COPYDATASTRUCT& copy_data);
   void SendInitialFiles();

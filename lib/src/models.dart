@@ -384,6 +384,7 @@ class Track {
     this.sourceServerId,
     this.sourceItemId,
     this.audioFormat,
+    this.trackNumber,
   });
 
   final String id;
@@ -399,6 +400,7 @@ class Track {
   final String? sourceServerId;
   final String? sourceItemId;
   final String? audioFormat;
+  final int? trackNumber;
 
   Track copyWith({
     String? id,
@@ -414,6 +416,7 @@ class Track {
     String? sourceServerId,
     String? sourceItemId,
     String? audioFormat,
+    int? trackNumber,
   }) {
     return Track(
       id: id ?? this.id,
@@ -429,6 +432,7 @@ class Track {
       sourceServerId: sourceServerId ?? this.sourceServerId,
       sourceItemId: sourceItemId ?? this.sourceItemId,
       audioFormat: audioFormat ?? this.audioFormat,
+      trackNumber: trackNumber ?? this.trackNumber,
     );
   }
 
@@ -447,6 +451,7 @@ class Track {
       'sourceServerId': sourceServerId,
       'sourceItemId': sourceItemId,
       'audioFormat': audioFormat,
+      'trackNumber': trackNumber,
     };
   }
 
@@ -480,6 +485,7 @@ class Track {
       audioFormat: localPath == null
           ? readAudioFormat(readNullableString(json, 'audioFormat'))
           : readAudioFormatFromPath(localPath),
+      trackNumber: readInt(json, 'trackNumber'),
     );
   }
 }
@@ -514,19 +520,6 @@ String fileNameWithoutExtension(String path) {
   final name = path.split(RegExp(r'[\\/]')).last;
   final index = name.lastIndexOf('.');
   return index < 0 ? name : name.substring(0, index);
-}
-
-String suggestedTrackFileName(Track track) {
-  final title = track.title.trim().isEmpty ? '未命名' : track.title.trim();
-  final artist = track.artist.trim();
-  final name = artist.isEmpty || artist == '未知歌手' ? title : '$artist - $title';
-  return '${sanitizeFileName(name)}${_downloadExtension(track)}';
-}
-
-String sanitizeFileName(String value) {
-  final sanitized = value.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
-  final trimmed = sanitized.trim().replaceAll(RegExp(r'\.+$'), '');
-  return trimmed.isEmpty ? '未命名' : trimmed;
 }
 
 String? readAudioFormat(String? value) {
@@ -570,12 +563,6 @@ String? localFilePathFromStreamUrl(String streamUrl) {
   } on UnsupportedError {
     return null;
   }
-}
-
-String _downloadExtension(Track track) {
-  final uri = Uri.tryParse(track.streamUrl);
-  final extension = _extension(uri?.path ?? track.streamUrl);
-  return isSupportedAudioPath('audio$extension') ? extension : '.mp3';
 }
 
 String _extension(String path) {

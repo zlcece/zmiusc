@@ -36,7 +36,7 @@ void ForwardFilesToExistingWindow(
 }
 
 void ActivateExistingWindow(const std::vector<std::string>& arguments) {
-  HWND window = ::FindWindow(kWindowClassName, kWindowTitle);
+  HWND window = ::FindWindow(kWindowClassName, nullptr);
   if (!window) {
     window = ::FindWindow(nullptr, kWindowTitle);
   }

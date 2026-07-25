@@ -20,6 +20,8 @@ class LibraryStore {
   static const _settingsKey = 'app_settings';
   static const _selectedServerKey = 'selected_server_id';
   static const _loginServerUrlKey = 'login_server_url';
+  static const _loginUsernameKey = 'login_username';
+  static const _loginPasswordKey = 'login_password';
   static const _themeModeKey = 'theme_mode';
   static const _playbackSessionKey = 'playback_session';
   static const _dailyRecommendationKey = 'daily_recommendation';
@@ -99,6 +101,21 @@ class LibraryStore {
 
   Future<void> saveLoginServerUrl(String value) async {
     await _writeString(_loginServerUrlKey, value.trim());
+  }
+
+  Future<String?> loadLoginUsername() async {
+    final value = await _readString(_loginUsernameKey);
+    return value == null || value.trim().isEmpty ? null : value.trim();
+  }
+
+  Future<String?> loadLoginPassword() async {
+    final value = await _readSecret(_loginPasswordKey);
+    return value == null || value.isEmpty ? null : value;
+  }
+
+  Future<void> saveLoginCredentials(String username, String password) async {
+    await _writeString(_loginUsernameKey, username.trim());
+    await _writeSecret(_loginPasswordKey, password);
   }
 
   Future<String> loadThemeMode() async {
@@ -353,15 +370,21 @@ class PlaybackSession {
 }
 
 class DailyRecommendationCache {
-  const DailyRecommendationCache({required this.dateKey, required this.tracks});
+  const DailyRecommendationCache({
+    required this.dateKey,
+    required this.tracks,
+    this.history = const [],
+  });
 
   final String dateKey;
   final List<Track> tracks;
+  final List<DailyRecommendationHistoryEntry> history;
 
   Map<String, Object?> toJson() {
     return {
       'dateKey': dateKey,
       'tracks': tracks.map((track) => track.toJson()).toList(),
+      'history': history.map((entry) => entry.toJson()).toList(),
     };
   }
 
@@ -373,9 +396,67 @@ class DailyRecommendationCache {
               .map((value) => Track.fromJson(Map<String, Object?>.from(value)))
               .toList()
         : <Track>[];
+    final rawHistory = json['history'];
+    final history = rawHistory is List
+        ? rawHistory
+              .whereType<Map>()
+              .map(
+                (value) => DailyRecommendationHistoryEntry.fromJson(
+                  Map<String, Object?>.from(value),
+                ),
+              )
+              .where((entry) => entry.dateKey.isNotEmpty)
+              .toList()
+        : <DailyRecommendationHistoryEntry>[];
+    if (history.isEmpty && tracks.isNotEmpty) {
+      history.add(
+        DailyRecommendationHistoryEntry(
+          dateKey: json['dateKey']?.toString() ?? '',
+          tracks: tracks,
+        ),
+      );
+    }
     return DailyRecommendationCache(
       dateKey: json['dateKey']?.toString() ?? '',
       tracks: tracks,
+      history: history,
+    );
+  }
+}
+
+class DailyRecommendationHistoryEntry {
+  const DailyRecommendationHistoryEntry({
+    required this.dateKey,
+    required this.tracks,
+    this.favoriteTracks = const [],
+  });
+
+  final String dateKey;
+  final List<Track> tracks;
+  final List<Track> favoriteTracks;
+
+  Map<String, Object?> toJson() {
+    return {
+      'dateKey': dateKey,
+      'tracks': tracks.map((track) => track.toJson()).toList(),
+      'favoriteTracks': favoriteTracks.map((track) => track.toJson()).toList(),
+    };
+  }
+
+  factory DailyRecommendationHistoryEntry.fromJson(Map<String, Object?> json) {
+    List<Track> readTracks(Object? value) {
+      return value is List
+          ? value
+                .whereType<Map>()
+                .map((item) => Track.fromJson(Map<String, Object?>.from(item)))
+                .toList()
+          : <Track>[];
+    }
+
+    return DailyRecommendationHistoryEntry(
+      dateKey: json['dateKey']?.toString() ?? '',
+      tracks: readTracks(json['tracks']),
+      favoriteTracks: readTracks(json['favoriteTracks']),
     );
   }
 }

@@ -167,7 +167,13 @@ Track localMetadataToTrack(LocalAudioMetadata metadata, ServerConfig source) {
     lyrics: metadata.lyrics,
     coverUrl: metadata.coverUrl,
     audioFormat: readAudioFormatFromPath(metadata.path),
+    trackNumber: _trackNumber(metadata.trackNumber),
   );
+}
+
+int? _trackNumber(String value) {
+  final result = int.tryParse(value.trim().split('/').first);
+  return result != null && result > 0 ? result : null;
 }
 
 String _displayArtist(String value) {

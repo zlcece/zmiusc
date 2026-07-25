@@ -72,6 +72,8 @@ class _MemoryLibraryStore extends LibraryStore {
   List<ServerConfig> savedServers = [];
   String? savedSelectedServerId;
   String? savedLoginServerUrl;
+  String? savedLoginUsername;
+  String? savedLoginPassword;
   AppSettings? savedSettings;
   PlaybackSession? savedPlaybackSession;
   DailyRecommendationCache? savedDailyRecommendation;
@@ -89,6 +91,18 @@ class _MemoryLibraryStore extends LibraryStore {
   @override
   Future<void> saveLoginServerUrl(String value) async {
     savedLoginServerUrl = value;
+  }
+
+  @override
+  Future<String?> loadLoginUsername() async => savedLoginUsername;
+
+  @override
+  Future<String?> loadLoginPassword() async => savedLoginPassword;
+
+  @override
+  Future<void> saveLoginCredentials(String username, String password) async {
+    savedLoginUsername = username;
+    savedLoginPassword = password;
   }
 
   @override
@@ -142,8 +156,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.0.14',
-    buildNumber: '19',
+    version: '1.0.17',
+    buildNumber: '22',
     buildSignature: '',
   );
 
@@ -159,7 +173,7 @@ void main() {
     expect(server.normalizedBaseUrl, 'https://music.example.com');
   });
 
-  test('login keeps one verified account and logout clears it', () async {
+  test('logout clears the active account but retains login input', () async {
     final store = _MemoryLibraryStore();
     final player = _RecordingPlayerController();
     final controller = AppController(store: store, player: player);
@@ -200,6 +214,8 @@ void main() {
     expect(controller.loginServerUrl, defaultMusicServerUrl);
     expect(store.savedLoginServerUrl, defaultMusicServerUrl);
     expect(store.savedServers.single.id, '$defaultMusicServerUrl|demo');
+    expect(store.savedLoginUsername, 'demo');
+    expect(store.savedLoginPassword, 'secret');
 
     await controller.logout();
 
@@ -208,6 +224,10 @@ void main() {
     expect(controller.servers, isEmpty);
     expect(store.savedServers, isEmpty);
     expect(store.savedSelectedServerId, isNull);
+    expect(controller.loginUsername, 'demo');
+    expect(controller.loginPassword, 'secret');
+    expect(store.savedLoginUsername, 'demo');
+    expect(store.savedLoginPassword, 'secret');
   });
 
   test('login stays unauthenticated when account persistence fails', () async {
@@ -2742,12 +2762,7 @@ plain text
           .toSet(),
       hasLength(recommendations.length),
     );
-    for (var index = 1; index < recommendations.length; index++) {
-      expect(
-        recommendations[index].artist,
-        isNot(recommendations[index - 1].artist),
-      );
-    }
+    expect(recommendations.map((track) => track.artist).toSet(), hasLength(11));
   });
 
   test('reuses in-flight cache size requests', () async {
@@ -2921,6 +2936,46 @@ plain text
     );
     expect(resolved.streamingCacheFile!.path.toLowerCase(), endsWith('.mp3'));
   });
+
+  test(
+    'clears other audio caches while preserving active cache files',
+    () async {
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'zmusic-audio-cache-clear-test-',
+      );
+      addTearDown(() async {
+        if (tempDirectory.existsSync()) {
+          await tempDirectory.delete(recursive: true);
+        }
+      });
+      final active = File(
+        '${tempDirectory.path}${Platform.pathSeparator}active.ape',
+      );
+      final inactive = File(
+        '${tempDirectory.path}${Platform.pathSeparator}inactive.mp3',
+      );
+      await active.writeAsBytes([1, 2, 3]);
+      await audioCachePartialMarker(active).create();
+      await File('${active.path}.mime').writeAsString('audio/ape');
+      await inactive.writeAsBytes([4, 5, 6, 7]);
+      await audioCacheCompletionMarker(inactive).create();
+      await File('${inactive.path}.mime').writeAsString('audio/mpeg');
+
+      final manager = AudioCacheManager();
+      final remaining = await manager.clearCache(
+        AppSettings(cacheDirectory: tempDirectory.path),
+        protectedPaths: {active.path},
+      );
+
+      expect(active.existsSync(), isTrue);
+      expect(audioCachePartialMarker(active).existsSync(), isTrue);
+      expect(File('${active.path}.mime').existsSync(), isTrue);
+      expect(inactive.existsSync(), isFalse);
+      expect(audioCacheCompletionMarker(inactive).existsSync(), isFalse);
+      expect(File('${inactive.path}.mime').existsSync(), isFalse);
+      expect(remaining, 3 + 'audio/ape'.length);
+    },
+  );
 
   test('prepares subsonic lossless streams for streaming cache proxy', () async {
     final tempDirectory = await Directory.systemTemp.createTemp(
@@ -3872,8 +3927,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.0.14',
-        buildNumber: '19',
+        version: '1.0.17',
+        buildNumber: '21',
         buildSignature: '',
       );
     });
@@ -3937,10 +3992,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.15',
-                  'versionCode': 115,
+                  'latestVersion': '1.0.18',
+                  'versionCode': 118,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.0.15/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.0.18/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'updateContent': ['启动自动检查更新'],
                   'releaseTime': '2026-07-16',
@@ -3966,7 +4021,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.0.15'), findsOneWidget);
+    expect(find.text('发现新版本 1.0.18'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -3978,7 +4033,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.0.15/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.0.18/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -3999,8 +4054,8 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.15',
-                  'versionCode': 115,
+                  'latestVersion': '1.0.18',
+                  'versionCode': 118,
                   'downloadUrl': downloadUri.toString(),
                   'fileName': 'zmusic-windows-x64.exe',
                   'updateContent': ['修复播放详情跳转', '优化更新检查'],
@@ -4035,8 +4090,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.0.15'));
-    expect(find.text('当前版本：1.0.14'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.0.18'));
+    expect(find.text('当前版本：1.0.17'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('下载更新'), findsOneWidget);
@@ -4184,6 +4239,8 @@ plain text
     final controller =
         AppController(store: LibraryStore(), player: PlayerController())
           ..settings = const AppSettings(checkUpdatesOnStartup: false)
+          ..loginUsername = 'demo'
+          ..loginPassword = 'secret'
           ..isInitialized = true;
 
     await tester.pumpWidget(ZmusicApp(controller: controller));
@@ -4213,10 +4270,12 @@ plain text
     expect(usernameField.decoration?.labelText, isNull);
     expect(usernameField.decoration?.hintText, '账号');
     expect(usernameField.decoration?.prefixIcon, isA<Icon>());
+    expect(usernameField.controller?.text, 'demo');
     expect(passwordField.decoration?.labelText, isNull);
     expect(passwordField.decoration?.hintText, '密码');
     expect(passwordField.decoration?.prefixIcon, isA<Icon>());
     expect(passwordField.decoration?.suffixIcon, isA<IconButton>());
+    expect(passwordField.controller?.text, 'secret');
     expect(find.byKey(const ValueKey('login-server-url')), findsNothing);
 
     debugDefaultTargetPlatformOverride = null;
@@ -4447,7 +4506,7 @@ plain text
     expect(slider.onChangeEnd, isNotNull);
   });
 
-  testWidgets('does not show search input on search results page', (
+  testWidgets('search results keep the query and allow another search', (
     tester,
   ) async {
     final controller = AppController(
@@ -4477,6 +4536,16 @@ plain text
         sourceName: 'Local',
         sourceItemId: r'D:\Music\song.mp3',
       ),
+      Track(
+        id: 'local-song-2',
+        title: '夜曲',
+        artist: '周杰伦',
+        album: 'Album',
+        streamUrl: 'file:///D:/Music/song-2.mp3',
+        sourceType: MusicSourceType.localFile,
+        sourceName: 'Local',
+        sourceItemId: r'D:\Music\song-2.mp3',
+      ),
     ];
 
     await tester.pumpWidget(ZmusicApp(controller: controller));
@@ -4485,13 +4554,28 @@ plain text
     await tester.pumpAndSettle();
 
     expect(find.text('搜索结果'), findsOneWidget);
-    expect(find.byType(TextField), findsNothing);
-    expect(find.text('歌曲'), findsOneWidget);
-    expect(find.text('歌手'), findsOneWidget);
-    expect(find.text('专辑'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('search-results-search-bar')),
+      findsOneWidget,
+    );
+    var searchField = find.byType(TextField);
+    expect(searchField, findsOneWidget);
+    expect(tester.widget<TextField>(searchField).controller?.text, '画沙');
+    expect(find.text('歌曲'), findsWidgets);
+    expect(find.text('歌手'), findsWidgets);
+    expect(find.text('专辑'), findsWidgets);
     expect(find.text('歌曲 1'), findsNothing);
     expect(find.text('歌手 0'), findsNothing);
     expect(find.text('专辑 0'), findsNothing);
+
+    await tester.enterText(searchField, '夜曲');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+
+    expect(find.text('搜索结果'), findsOneWidget);
+    searchField = find.byType(TextField);
+    expect(tester.widget<TextField>(searchField).controller?.text, '夜曲');
+    expect(controller.visibleTracks.map((track) => track.title), ['夜曲']);
   });
 
   testWidgets('opens the music tab by default with focused library shortcuts', (
@@ -5859,7 +5943,7 @@ plain text
     expect(find.text('歌曲'), findsNothing);
   });
 
-  testWidgets('track long press menu can add subsonic songs without sharing', (
+  testWidgets('track long press menu omits download and sharing', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1264, 720);
@@ -5921,7 +6005,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(find.text('下一首播放'), findsOneWidget);
-    expect(find.text('下载'), findsOneWidget);
+    expect(find.text('下载'), findsNothing);
     expect(find.text('分享'), findsNothing);
     expect(find.text('加入歌单'), findsOneWidget);
   });
@@ -6618,7 +6702,7 @@ plain text
     await tester.pumpWidget(ZmusicApp(controller: controller));
     await tester.pump();
 
-    expect(player.volume, 0.55);
+    expect(player.assignedVolume, 0.55);
   });
 
   testWidgets('desktop volume slider has a usable vertical track', (
@@ -7269,7 +7353,7 @@ class _RecordingPlayerController extends PlayerController {
   Track? playedTrack;
   List<Track> playedTracks = const [];
   int? playedIndex;
-  double? volume;
+  double? assignedVolume;
   bool stopped = false;
 
   @override
@@ -7290,7 +7374,7 @@ class _RecordingPlayerController extends PlayerController {
 
   @override
   Future<void> setVolume(double volume) async {
-    this.volume = volume;
+    assignedVolume = volume;
   }
 
   @override

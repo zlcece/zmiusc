@@ -78,6 +78,7 @@ class PlayerController extends ChangeNotifier {
   int? _preparedShuffleNextIndex;
   int? _openingPlaybackRequestId;
   bool _currentTrackNeedsOpening = false;
+  double _volume = 0.55;
   Timer? _startupRecoveryTimer;
   Future<void> _audioOperation = Future.value();
 
@@ -95,6 +96,18 @@ class PlayerController extends ChangeNotifier {
   }
 
   Track? get pendingNextTrack => _pendingNextTrack;
+
+  Set<String> get activeStreamingCachePaths {
+    final paths = <String>{
+      if (_streamingCacheProxy case final proxy?) proxy.cacheFile.path,
+      if (_nextTrackPrefetch case final prefetch?) prefetch.cacheFile.path,
+    };
+    final currentUri = Uri.tryParse(currentTrack?.streamUrl ?? '');
+    if (currentUri != null && currentUri.scheme == 'file') {
+      paths.add(currentUri.toFilePath());
+    }
+    return paths;
+  }
 
   PlaybackMode get playbackMode => _playbackMode;
 
@@ -114,6 +127,8 @@ class PlayerController extends ChangeNotifier {
   }
 
   bool get isPlaying => _audioPlayer.playing;
+
+  double get volume => _volume;
 
   int get playSessionId => _playSessionId;
 
@@ -361,7 +376,13 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> setVolume(double volume) async {
-    await _audioPlayer.setVolume(volume.clamp(0, 1).toDouble());
+    final normalized = volume.clamp(0, 1).toDouble();
+    await _audioPlayer.setVolume(normalized);
+    if (_volume == normalized) {
+      return;
+    }
+    _volume = normalized;
+    notifyListeners();
   }
 
   Future<void> _playIndex(

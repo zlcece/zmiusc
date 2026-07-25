@@ -24,6 +24,28 @@ const String defaultMusicServerUrl = 'https://fnnav.zuitimes.com';
 const int searchSongPageSize = 60;
 const Duration playlistTrackCacheDuration = Duration(minutes: 5);
 
+List<Track> _sortAlbumTracks(List<Track> tracks) {
+  if (!tracks.any((track) => track.trackNumber != null)) {
+    return tracks;
+  }
+  final indexedTracks = tracks.indexed.toList();
+  indexedTracks.sort((left, right) {
+    final leftNumber = left.$2.trackNumber;
+    final rightNumber = right.$2.trackNumber;
+    if (leftNumber == null) {
+      return rightNumber == null ? left.$1.compareTo(right.$1) : 1;
+    }
+    if (rightNumber == null) {
+      return -1;
+    }
+    final numberComparison = leftNumber.compareTo(rightNumber);
+    return numberComparison != 0
+        ? numberComparison
+        : left.$1.compareTo(right.$1);
+  });
+  return indexedTracks.map((entry) => entry.$2).toList();
+}
+
 class AppController extends ChangeNotifier {
   AppController({
     required this.store,
@@ -66,6 +88,8 @@ class AppController extends ChangeNotifier {
   String? selectedServerId;
   String? statusMessage;
   String loginServerUrl = defaultMusicServerUrl;
+  String loginUsername = '';
+  String loginPassword = '';
   ThemeMode themeMode = ThemeMode.system;
   bool isInitialized = false;
   bool isBusy = false;
@@ -85,6 +109,7 @@ class AppController extends ChangeNotifier {
   bool _isRestoringPlaybackSession = false;
   int _recommendationRequestId = 0;
   String? _recommendedDateKey;
+  List<DailyRecommendationHistoryEntry> _recommendationHistory = [];
   late final StreamSubscription<Duration> _positionSubscription;
 
   ServerConfig? get selectedServer {
@@ -184,6 +209,10 @@ class AppController extends ChangeNotifier {
         await store.loadLoginServerUrl() ??
         restoredServer?.normalizedBaseUrl ??
         defaultMusicServerUrl;
+    loginUsername =
+        await store.loadLoginUsername() ?? restoredServer?.username ?? '';
+    loginPassword =
+        await store.loadLoginPassword() ?? restoredServer?.password ?? '';
     if (restoredServers.length != servers.length) {
       for (final server in restoredServers) {
         if (server.id != restoredServer?.id) {
@@ -212,6 +241,12 @@ class AppController extends ChangeNotifier {
       }
       if (settings.showDailyRecommendation) {
         final recommendation = await store.loadDailyRecommendation();
+        if (recommendation != null) {
+          _recommendationHistory = _recentRecommendationHistory(
+            recommendation.history,
+            DateTime.now(),
+          );
+        }
         if (recommendation != null &&
             recommendation.dateKey == _recommendationDateKey(DateTime.now()) &&
             recommendation.tracks.isNotEmpty) {
@@ -221,11 +256,7 @@ class AppController extends ChangeNotifier {
           )) {
             recommendedTracks = recommendation.tracks;
             _recommendedDateKey = recommendation.dateKey;
-          } else {
-            await store.clearDailyRecommendation();
           }
-        } else {
-          await store.clearDailyRecommendation();
         }
       } else {
         await store.clearDailyRecommendation();
@@ -274,6 +305,7 @@ class AppController extends ChangeNotifier {
       await store.saveServers([server]);
       await store.saveSelectedServerId(server.id);
       await store.saveLoginServerUrl(normalizedUrl);
+      await store.saveLoginCredentials(account, password);
       await _clearPlaybackSession();
       await _clearDailyRecommendation();
       _clearPlaylistTrackCache();
@@ -285,6 +317,8 @@ class AppController extends ChangeNotifier {
       servers = [server];
       selectedServerId = server.id;
       loginServerUrl = normalizedUrl;
+      loginUsername = account;
+      loginPassword = password;
       isInitialized = true;
       searchResults = const LibrarySearchResults();
       libraryOverview = const LibraryOverview();
@@ -393,9 +427,12 @@ class AppController extends ChangeNotifier {
 
   Future<void> clearAudioCache() async {
     await _runBusy(() async {
-      await cacheManager.clearCache(settings);
+      final remainingBytes = await cacheManager.clearCache(
+        settings,
+        protectedPaths: player.activeStreamingCachePaths,
+      );
       _cacheSizeFuture = null;
-      statusMessage = '缓存已清除。';
+      statusMessage = remainingBytes == 0 ? '缓存已清除。' : '缓存已清理，正在使用的缓存已保留。';
     });
   }
 
@@ -791,6 +828,15 @@ class AppController extends ChangeNotifier {
 
   Future<void> searchLibraryItem(LibrarySectionItem item) async {
     await searchSelectedServer(item.title, scope: LibrarySearchScope.songs);
+    if (item.type != LibrarySectionType.albums) {
+      return;
+    }
+    searchResults = LibrarySearchResults(
+      songs: _sortAlbumTracks(searchResults.songs),
+      artists: searchResults.artists,
+      albums: searchResults.albums,
+    );
+    notifyListeners();
   }
 
   Future<void> refreshFavoriteTracks() async {
@@ -921,6 +967,7 @@ class AppController extends ChangeNotifier {
         habitSearches,
       )).expand((tracks) => tracks).toList();
       final randomTracks = await randomTracksFuture;
+      final generatedAt = DateTime.now();
       final tracks = buildDailyRecommendationTracks(
         favorites: favoriteTracks,
         related: relatedTracks,
@@ -928,6 +975,8 @@ class AppController extends ChangeNotifier {
         randomTracks: randomTracks,
         excludedTracks: player.queue,
         seed: seed,
+        history: _recommendationHistory,
+        generatedAt: generatedAt,
       );
 
       if (requestId != _recommendationRequestId ||
@@ -935,11 +984,30 @@ class AppController extends ChangeNotifier {
           !settings.showDailyRecommendation) {
         return;
       }
-      final dateKey = _recommendationDateKey(DateTime.now());
+      final dateKey = _recommendationDateKey(generatedAt);
+      final favoriteKeys = favoriteTracks.map(_recommendationTrackKey).toSet();
+      final selectedFavorites = tracks
+          .where(
+            (track) => favoriteKeys.contains(_recommendationTrackKey(track)),
+          )
+          .toList();
+      _recommendationHistory = _mergeRecommendationHistory(
+        _recommendationHistory,
+        DailyRecommendationHistoryEntry(
+          dateKey: dateKey,
+          tracks: tracks,
+          favoriteTracks: selectedFavorites,
+        ),
+        generatedAt,
+      );
       recommendedTracks = tracks;
       _recommendedDateKey = dateKey;
       await store.saveDailyRecommendation(
-        DailyRecommendationCache(dateKey: dateKey, tracks: tracks),
+        DailyRecommendationCache(
+          dateKey: dateKey,
+          tracks: tracks,
+          history: _recommendationHistory,
+        ),
       );
       if (showStatus) {
         statusMessage = tracks.isEmpty
@@ -1000,6 +1068,7 @@ class AppController extends ChangeNotifier {
     _recommendationRequestId++;
     recommendedTracks = [];
     _recommendedDateKey = null;
+    _recommendationHistory = [];
     isLoadingRecommendations = false;
     await store.clearDailyRecommendation();
     notifyListeners();
@@ -1679,37 +1748,6 @@ class AppController extends ChangeNotifier {
     player.updateTrack(current.copyWith(lyrics: trimmed));
   }
 
-  Future<void> downloadTrack(Track track, String destinationPath) async {
-    await _runBusy(() async {
-      final destination = File(destinationPath);
-      await destination.parent.create(recursive: true);
-
-      final uri = Uri.tryParse(track.streamUrl);
-      if (uri != null && uri.scheme == 'file') {
-        final source = File(uri.toFilePath());
-        if (!source.existsSync()) {
-          throw Exception('本地音频文件不存在。');
-        }
-        if (source.absolute.path == destination.absolute.path) {
-          statusMessage = '文件已在目标位置。';
-          return;
-        }
-        await source.copy(destination.path);
-      } else if (uri != null &&
-          (uri.scheme == 'http' || uri.scheme == 'https')) {
-        final response = await http.get(uri);
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          throw Exception('下载失败：HTTP ${response.statusCode}');
-        }
-        await destination.writeAsBytes(response.bodyBytes, flush: true);
-      } else {
-        throw Exception('不支持的下载地址。');
-      }
-
-      statusMessage = '已下载：${destination.path}';
-    });
-  }
-
   Future<LocalAudioMetadata> readLocalAudioMetadata(String path) async {
     final file = File(path);
     if (!file.existsSync()) {
@@ -2301,6 +2339,9 @@ class AppController extends ChangeNotifier {
 }
 
 const int _dailyRecommendationCount = 30;
+const int _recommendationHistoryDays = 7;
+const int _recommendationGeneralCooldownDays = 3;
+const int _recommendationFavoriteCooldownDays = 5;
 const int _sequentialCompletionRandomQueueSize = 30;
 
 String _recommendationDateKey(DateTime date) {
@@ -2311,6 +2352,68 @@ String _recommendationDateKey(DateTime date) {
 
 int _dailyRecommendationSeed(DateTime date) {
   return date.year * 10000 + date.month * 100 + date.day;
+}
+
+int? _recommendationHistoryAge(String dateKey, DateTime now) {
+  final date = DateTime.tryParse(dateKey);
+  if (date == null) {
+    return null;
+  }
+  final today = DateTime(now.year, now.month, now.day);
+  final historyDate = DateTime(date.year, date.month, date.day);
+  return today.difference(historyDate).inDays;
+}
+
+List<DailyRecommendationHistoryEntry> _recentRecommendationHistory(
+  Iterable<DailyRecommendationHistoryEntry> history,
+  DateTime now,
+) {
+  return history.where((entry) {
+    final age = _recommendationHistoryAge(entry.dateKey, now);
+    return age != null && age >= 0 && age < _recommendationHistoryDays;
+  }).toList();
+}
+
+List<DailyRecommendationHistoryEntry> _mergeRecommendationHistory(
+  Iterable<DailyRecommendationHistoryEntry> history,
+  DailyRecommendationHistoryEntry current,
+  DateTime now,
+) {
+  final recent = _recentRecommendationHistory(history, now);
+  final currentIndex = recent.indexWhere(
+    (entry) => entry.dateKey == current.dateKey,
+  );
+  if (currentIndex < 0) {
+    recent.add(current);
+    return recent;
+  }
+
+  final existing = recent[currentIndex];
+  recent[currentIndex] = DailyRecommendationHistoryEntry(
+    dateKey: current.dateKey,
+    tracks: _bestRecommendationTracksByKey([
+      ...existing.tracks,
+      ...current.tracks,
+    ]).values.toList(),
+    favoriteTracks: _bestRecommendationTracksByKey([
+      ...existing.favoriteTracks,
+      ...current.favoriteTracks,
+    ]).values.toList(),
+  );
+  return recent;
+}
+
+int _directFavoriteRecommendationCount(int favoriteCount) {
+  if (favoriteCount <= 0) {
+    return 0;
+  }
+  if (favoriteCount < 10) {
+    return 1;
+  }
+  if (favoriteCount < 30) {
+    return 2;
+  }
+  return 4;
 }
 
 List<LibrarySectionItem> _interleaveRecommendationAlbums(
@@ -2338,6 +2441,8 @@ List<Track> buildDailyRecommendationTracks({
   required List<Track> randomTracks,
   required Iterable<Track> excludedTracks,
   required int seed,
+  Iterable<DailyRecommendationHistoryEntry> history = const [],
+  DateTime? generatedAt,
 }) {
   final bestByKey = _bestRecommendationTracksByKey([
     ...favorites,
@@ -2355,10 +2460,39 @@ List<Track> buildDailyRecommendationTracks({
   }
 
   final normalizedFavorites = normalizeSource(favorites);
-  final normalizedRelated = normalizeSource(related);
-  final normalizedHabitual = normalizeSource(habitual);
-  final normalizedRandom = normalizeSource(randomTracks);
+  final favoriteKeys = normalizedFavorites.map(_recommendationTrackKey).toSet();
+  List<Track> withoutDirectFavorites(List<Track> source) {
+    return source
+        .where(
+          (track) => !favoriteKeys.contains(_recommendationTrackKey(track)),
+        )
+        .toList();
+  }
+
+  final normalizedRelated = withoutDirectFavorites(normalizeSource(related));
+  final normalizedHabitual = withoutDirectFavorites(normalizeSource(habitual));
+  final normalizedRandom = withoutDirectFavorites(
+    normalizeSource(randomTracks),
+  );
   final usedKeys = excludedTracks.map(_recommendationTrackKey).toSet();
+  final cooldownLayers = <int, Set<String>>{};
+  final now = generatedAt ?? DateTime.now();
+  for (final entry in _recentRecommendationHistory(history, now)) {
+    final age = _recommendationHistoryAge(entry.dateKey, now)!;
+    final keys = cooldownLayers.putIfAbsent(age, () => <String>{});
+    if (age < _recommendationGeneralCooldownDays) {
+      keys.addAll(entry.tracks.map(_recommendationTrackKey));
+    }
+    if (age < _recommendationFavoriteCooldownDays) {
+      keys.addAll(entry.favoriteTracks.map(_recommendationTrackKey));
+    }
+  }
+  final blockedKeyCounts = <String, int>{};
+  for (final keys in cooldownLayers.values) {
+    for (final key in keys) {
+      blockedKeyCounts.update(key, (count) => count + 1, ifAbsent: () => 1);
+    }
+  }
   final random = Random(seed);
   final selected = <Track>[];
 
@@ -2366,13 +2500,10 @@ List<Track> buildDailyRecommendationTracks({
     if (count <= 0) {
       return;
     }
-    final candidates =
-        source
-            .where(
-              (track) => !usedKeys.contains(_recommendationTrackKey(track)),
-            )
-            .toList()
-          ..shuffle(random);
+    final candidates = source.where((track) {
+      final key = _recommendationTrackKey(track);
+      return !usedKeys.contains(key) && !blockedKeyCounts.containsKey(key);
+    }).toList()..shuffle(random);
     var added = 0;
     for (final track in candidates) {
       if (!usedKeys.add(_recommendationTrackKey(track))) {
@@ -2386,17 +2517,38 @@ List<Track> buildDailyRecommendationTracks({
     }
   }
 
-  addFrom(normalizedFavorites, 4);
+  final directFavoriteCount = _directFavoriteRecommendationCount(
+    normalizedFavorites.length,
+  );
+  final randomCount = _dailyRecommendationCount - directFavoriteCount - 8 - 9;
+  addFrom(normalizedFavorites, directFavoriteCount);
   addFrom(normalizedRelated, 8);
   addFrom(normalizedHabitual, 9);
-  addFrom(normalizedRandom, 9);
-  if (selected.length < _dailyRecommendationCount) {
-    addFrom([
-      ...normalizedFavorites,
-      ...normalizedRelated,
-      ...normalizedHabitual,
-      ...normalizedRandom,
-    ], _dailyRecommendationCount - selected.length);
+  addFrom(normalizedRandom, randomCount);
+
+  void fillFromAvailableSources() {
+    addFrom(normalizedRandom, _dailyRecommendationCount - selected.length);
+    addFrom(normalizedRelated, _dailyRecommendationCount - selected.length);
+    addFrom(normalizedHabitual, _dailyRecommendationCount - selected.length);
+    addFrom(normalizedFavorites, _dailyRecommendationCount - selected.length);
+  }
+
+  fillFromAvailableSources();
+  final cooldownAges = cooldownLayers.keys.toList()
+    ..sort((left, right) => right.compareTo(left));
+  for (final age in cooldownAges) {
+    if (selected.length >= _dailyRecommendationCount) {
+      break;
+    }
+    for (final key in cooldownLayers[age]!) {
+      final count = blockedKeyCounts[key];
+      if (count == null || count <= 1) {
+        blockedKeyCounts.remove(key);
+      } else {
+        blockedKeyCounts[key] = count - 1;
+      }
+    }
+    fillFromAvailableSources();
   }
 
   return _avoidAdjacentRecommendationArtists(

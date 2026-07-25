@@ -499,7 +499,13 @@ class SubsonicApiClient {
       sourceServerId: server.id,
       sourceItemId: id,
       audioFormat: audioFormat,
+      trackNumber: _positiveInt(value, 'track'),
     );
+  }
+
+  int? _positiveInt(Map<String, Object?> value, String key) {
+    final result = readInt(value, key);
+    return result != null && result > 0 ? result : null;
   }
 
   LibrarySectionItem? _artistToLibraryItem(Map<String, Object?> value) {

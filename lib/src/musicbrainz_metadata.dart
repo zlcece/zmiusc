@@ -95,7 +95,7 @@ class MusicBrainzMetadataService {
           uri,
           headers: const {
             'Accept': 'application/json',
-            'User-Agent': 'Zmusic/1.0.14 (https://file.zuitimes.com/zmusic/)',
+            'User-Agent': 'Zmusic/1.0.17 (https://file.zuitimes.com/zmusic/)',
           },
         )
         .timeout(const Duration(seconds: 15));

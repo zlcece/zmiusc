@@ -113,9 +113,15 @@ bool FlutterWindow::OnCreate() {
           "com.zmusic.app/windows_settings",
           &flutter::StandardMethodCodec::GetInstance());
   windows_settings_channel_->SetMethodCallHandler(
-      [](const flutter::MethodCall<flutter::EncodableValue>& call,
-         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
-             result) {
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() == "showTrayPlayer") {
+          result->Success(flutter::EncodableValue(
+              system_media_controls_ &&
+              system_media_controls_->ShowTrayPlayerPopup()));
+          return;
+        }
         if (call.method_name() != "setLaunchAtStartup") {
           result->NotImplemented();
           return;
@@ -170,9 +176,18 @@ bool FlutterWindow::OnCreate() {
             state.can_skip_previous =
                 ReadBool(*values, "canSkipPrevious");
             state.can_skip_next = ReadBool(*values, "canSkipNext");
+            const auto volume_iterator =
+                values->find(flutter::EncodableValue("volume"));
+            if (volume_iterator != values->end()) {
+              if (const auto* volume =
+                      std::get_if<double>(&volume_iterator->second)) {
+                state.volume = *volume;
+              }
+            }
             state.title = ReadString(*values, "title");
             state.artist = ReadString(*values, "artist");
             state.album = ReadString(*values, "album");
+            state.artwork_path = ReadString(*values, "artworkPath");
             system_media_controls_->Update(state);
           }
           result->Success();
@@ -212,6 +227,14 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (system_media_controls_) {
+    LRESULT result = 0;
+    if (system_media_controls_->HandleWindowMessage(message, wparam, lparam,
+                                                     &result)) {
+      return result;
+    }
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
@@ -237,6 +260,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       return 0;
     case kSystemMediaCommandMessage:
       SendSystemMediaCommand(wparam);
+      return 0;
+    case kSystemMediaVolumeMessage:
+      SendSystemMediaVolume(wparam);
       return 0;
     case WM_APPCOMMAND:
       if (!system_media_controls_ || !system_media_controls_->available()) {
@@ -344,4 +370,14 @@ void FlutterWindow::SendSystemMediaCommand(WPARAM command) {
   media_channel_->InvokeMethod(
       "mediaButton",
       std::make_unique<flutter::EncodableValue>(std::string(name)));
+}
+
+void FlutterWindow::SendSystemMediaVolume(WPARAM volume) {
+  if (!media_channel_) {
+    return;
+  }
+  const double normalized =
+      std::clamp(static_cast<double>(volume) / 1000.0, 0.0, 1.0);
+  media_channel_->InvokeMethod(
+      "setVolume", std::make_unique<flutter::EncodableValue>(normalized));
 }
