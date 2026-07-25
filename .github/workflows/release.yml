@@ -243,7 +243,7 @@ jobs:
           APP_PATH='build/ios/iphoneos/Runner.app'
           test -d "$APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.0.17'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '21'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '22'
           mkdir -p dist/ios/Payload
           cp -R "$APP_PATH" dist/ios/Payload/
           rm -rf dist/ios/Payload/Runner.app/_CodeSignature
