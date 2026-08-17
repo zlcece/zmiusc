@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'app_paths.dart';
+import 'app_logger.dart';
 import 'models.dart';
 import 'playback_source.dart';
 import 'settings_models.dart';
@@ -52,8 +53,22 @@ class AudioCacheManager {
         track: track.copyWith(streamUrl: Uri.file(cachedFile.path).toString()),
       );
     }
-    await _discardIncompleteCacheFile(cachedFile);
-    await markAudioCachePartial(cachedFile);
+    try {
+      final discarded = await _discardIncompleteCacheFile(cachedFile);
+      if (!discarded) {
+        AppLogger.instance.warning('cache', '缓存文件正被占用，本次改用原始音频流播放');
+        return PlaybackTrack(track: track);
+      }
+      await markAudioCachePartial(cachedFile);
+    } on FileSystemException catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'cache',
+        '准备音频缓存失败，本次改用原始音频流播放',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return PlaybackTrack(track: track);
+    }
     _scheduleTrim(settings);
     return PlaybackTrack(track: track, streamingCacheFile: cachedFile);
   }
@@ -242,12 +257,17 @@ Future<void> markAudioCachePartial(File cacheFile) async {
 
 Future<void> markAudioCacheComplete(File cacheFile) async {
   final marker = audioCacheCompletionMarker(cacheFile);
-  if (!await marker.exists()) {
-    await marker.create(recursive: true);
-  }
+  final cacheLength = await cacheFile.length();
+  await marker.writeAsString(cacheLength.toString(), flush: true);
   final partial = audioCachePartialMarker(cacheFile);
   if (await partial.exists()) {
-    await partial.delete();
+    try {
+      await partial.delete();
+    } on FileSystemException {
+      if (await partial.exists()) {
+        rethrow;
+      }
+    }
   }
 }
 
@@ -255,43 +275,36 @@ bool isCompletedAudioCacheFile(File cacheFile) {
   if (!cacheFile.existsSync() || cacheFile.lengthSync() <= 0) {
     return false;
   }
-  if (audioCacheCompletionMarker(cacheFile).existsSync()) {
-    return true;
+  final marker = audioCacheCompletionMarker(cacheFile);
+  if (!marker.existsSync()) {
+    return false;
   }
-  return _audioCacheMimeFile(cacheFile).existsSync() &&
-      !_audioCachePartialFile(cacheFile).existsSync();
+  try {
+    final expectedLength = int.tryParse(marker.readAsStringSync().trim());
+    return expectedLength != null &&
+        expectedLength > 0 &&
+        expectedLength == cacheFile.lengthSync();
+  } on FileSystemException {
+    return false;
+  }
 }
 
 Future<void> _ensureAudioCacheCompletionMarker(File cacheFile) async {
   await markAudioCacheComplete(cacheFile);
 }
 
-Future<void> _discardIncompleteCacheFile(File cacheFile) async {
+Future<bool> _discardIncompleteCacheFile(File cacheFile) async {
   if (!cacheFile.existsSync()) {
-    return;
+    return true;
   }
   if (isCompletedAudioCacheFile(cacheFile)) {
-    return;
+    return true;
   }
-  await _deleteCacheFileFamily(cacheFile);
-}
-
-Future<void> _deleteCacheFileFamily(File cacheFile) async {
-  if (await cacheFile.exists()) {
-    await cacheFile.delete();
-  }
-  final marker = audioCacheCompletionMarker(cacheFile);
-  if (await marker.exists()) {
-    await marker.delete();
-  }
-  final mimeFile = File('${cacheFile.path}.mime');
-  if (await mimeFile.exists()) {
-    await mimeFile.delete();
-  }
-  final partial = audioCachePartialMarker(cacheFile);
-  if (await partial.exists()) {
-    await partial.delete();
-  }
+  await _tryDeleteCacheFileFamily(cacheFile);
+  return !await cacheFile.exists() &&
+      !await audioCacheCompletionMarker(cacheFile).exists() &&
+      !await _audioCacheMimeFile(cacheFile).exists() &&
+      !await audioCachePartialMarker(cacheFile).exists();
 }
 
 Future<int> _tryDeleteCacheFileFamily(File cacheFile) async {
@@ -339,10 +352,6 @@ String _primaryAudioCachePath(String path) {
 String _cachePathKey(String path) {
   final absolute = File(path).absolute.path;
   return Platform.isWindows ? absolute.toLowerCase() : absolute;
-}
-
-File _audioCachePartialFile(File cacheFile) {
-  return audioCachePartialMarker(cacheFile);
 }
 
 File _audioCacheMimeFile(File cacheFile) {

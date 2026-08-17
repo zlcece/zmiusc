@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -17,6 +18,7 @@ class AppUpdateInfo {
     required this.versionCode,
     required this.downloadUri,
     required this.fileName,
+    required this.md5Checksum,
     required this.updateContent,
     required this.releaseTime,
   });
@@ -25,6 +27,7 @@ class AppUpdateInfo {
   final int versionCode;
   final Uri downloadUri;
   final String fileName;
+  final String md5Checksum;
   final List<String> updateContent;
   final String releaseTime;
 }
@@ -55,9 +58,10 @@ class AppUpdateService {
   final Uri manifestUri;
 
   Future<AppUpdateInfo> fetchForPlatform(String platformKey) async {
+    final requestUri = _withCacheBust(manifestUri);
     final response = httpClient == null
-        ? await http.get(manifestUri)
-        : await httpClient!.get(manifestUri);
+        ? await http.get(requestUri, headers: _noCacheHeaders)
+        : await httpClient!.get(requestUri, headers: _noCacheHeaders);
     if (response.statusCode != 200) {
       throw Exception('更新服务返回状态码 ${response.statusCode}。');
     }
@@ -74,6 +78,10 @@ class AppUpdateService {
     }
 
     final latestVersion = _requiredString(platform, 'latestVersion');
+    final md5Checksum = _requiredString(platform, 'md5').toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(md5Checksum)) {
+      throw const FormatException('更新清单中的 MD5 无效。');
+    }
     final downloadUri = Uri.tryParse(_requiredString(platform, 'downloadUrl'));
     if (downloadUri == null ||
         !downloadUri.hasScheme ||
@@ -94,6 +102,7 @@ class AppUpdateService {
       versionCode: _readInt(platform['versionCode']),
       downloadUri: downloadUri,
       fileName: _optionalString(platform['fileName']),
+      md5Checksum: md5Checksum,
       updateContent: updateContent,
       releaseTime: _optionalString(platform['releaseTime']),
     );
@@ -127,7 +136,9 @@ class AppUpdateService {
     );
 
     try {
-      final request = http.Request('GET', update.downloadUri);
+      final requestUri = _withCacheBust(update.downloadUri);
+      final request = http.Request('GET', requestUri)
+        ..headers.addAll(_noCacheHeaders);
       final response = await client.send(request);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw Exception('更新文件下载失败：HTTP ${response.statusCode}');
@@ -156,6 +167,15 @@ class AppUpdateService {
         }
       } finally {
         await sink.close();
+      }
+      final downloadedMd5 = (await destination.openRead().transform(md5).first)
+          .toString()
+          .toLowerCase();
+      if (downloadedMd5 != update.md5Checksum) {
+        throw Exception(
+          '更新文件 MD5 校验失败，期望 ${update.md5Checksum.toUpperCase()}，'
+          '实际 ${downloadedMd5.toUpperCase()}。',
+        );
       }
       return destination;
     } catch (_) {
@@ -266,4 +286,18 @@ List<int> _numericVersionParts(String version) {
       .split('.')
       .map((part) => int.tryParse(part) ?? 0)
       .toList(growable: false);
+}
+
+const Map<String, String> _noCacheHeaders = {
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+};
+
+Uri _withCacheBust(Uri uri) {
+  return uri.replace(
+    queryParameters: {
+      ...uri.queryParameters,
+      'v': DateTime.now().millisecondsSinceEpoch.toString(),
+    },
+  );
 }

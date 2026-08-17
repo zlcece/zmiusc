@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.view.KeyEvent
 
 internal object MediaControlBridge {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -34,6 +35,24 @@ internal object MediaControlBridge {
 
     fun dispatch(command: String) {
         mainHandler.post { listener?.invoke(command) }
+    }
+
+    fun dispatch(event: KeyEvent): Boolean {
+        val command =
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                KeyEvent.KEYCODE_HEADSETHOOK -> "playPause"
+                KeyEvent.KEYCODE_MEDIA_PLAY -> "play"
+                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_STOP -> "pause"
+                KeyEvent.KEYCODE_MEDIA_NEXT -> "next"
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "previous"
+                else -> return false
+            }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            dispatch(command)
+        }
+        return true
     }
 }
 
@@ -59,6 +78,17 @@ class ZmusicMediaSessionService : Service() {
                     override fun onSkipToNext() = MediaControlBridge.dispatch("next")
 
                     override fun onSkipToPrevious() = MediaControlBridge.dispatch("previous")
+
+                    @Suppress("DEPRECATION")
+                    override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                        val event =
+                            mediaButtonIntent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+                                ?: return super.onMediaButtonEvent(mediaButtonIntent)
+                        if (MediaControlBridge.dispatch(event)) {
+                            return true
+                        }
+                        return super.onMediaButtonEvent(mediaButtonIntent)
+                    }
                 },
                 Handler(Looper.getMainLooper()),
             )

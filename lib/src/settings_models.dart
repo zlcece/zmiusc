@@ -5,6 +5,8 @@ const int defaultCacheSizeBytes = 2 * gb;
 
 enum CloseButtonBehavior { exit, minimizeToTray }
 
+enum AppLogLevel { error, warning, info, debug }
+
 enum HomeShortcutSection {
   favorites,
   myPlaylists,
@@ -51,6 +53,7 @@ class AppSettings {
     this.showMyPlaylistSection = true,
     this.showPublicPlaylistSection = true,
     this.checkUpdatesOnStartup = true,
+    this.logLevel = AppLogLevel.error,
   });
 
   final String cacheDirectory;
@@ -69,6 +72,7 @@ class AppSettings {
   final bool showMyPlaylistSection;
   final bool showPublicPlaylistSection;
   final bool checkUpdatesOnStartup;
+  final AppLogLevel logLevel;
 
   AppSettings get normalized {
     return copyWith(
@@ -132,6 +136,7 @@ class AppSettings {
     bool? showMyPlaylistSection,
     bool? showPublicPlaylistSection,
     bool? checkUpdatesOnStartup,
+    AppLogLevel? logLevel,
   }) {
     return AppSettings(
       cacheDirectory: cacheDirectory ?? this.cacheDirectory,
@@ -156,6 +161,7 @@ class AppSettings {
           showPublicPlaylistSection ?? this.showPublicPlaylistSection,
       checkUpdatesOnStartup:
           checkUpdatesOnStartup ?? this.checkUpdatesOnStartup,
+      logLevel: logLevel ?? this.logLevel,
     );
   }
 
@@ -187,6 +193,7 @@ class AppSettings {
       'showMyPlaylistSection': showMyPlaylistSection,
       'showPublicPlaylistSection': showPublicPlaylistSection,
       'checkUpdatesOnStartup': checkUpdatesOnStartup,
+      'logLevel': logLevel.name,
     };
   }
 
@@ -252,6 +259,10 @@ class AppSettings {
         json,
         'checkUpdatesOnStartup',
         fallback: true,
+      ),
+      logLevel: AppLogLevel.values.firstWhere(
+        (value) => value.name == _readString(json, 'logLevel'),
+        orElse: () => AppLogLevel.error,
       ),
     ).normalized;
   }

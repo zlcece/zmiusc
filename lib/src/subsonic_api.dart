@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
+import 'app_logger.dart';
 import 'models.dart';
 
 class SubsonicApiException implements Exception {
@@ -22,11 +25,20 @@ class SubsonicApiClient {
   static const _apiVersion = '1.16.1';
   static const _clientName = 'zmusic';
   static const _albumCountPageSize = 500;
-  static final http.Client _sharedHttpClient = http.Client();
+  static const _readRetryDelays = <Duration>[
+    Duration(milliseconds: 400),
+    Duration(milliseconds: 1000),
+  ];
+  static final http.Client _sharedHttpClient = _createSharedHttpClient();
 
   final ServerConfig server;
   final http.Client _httpClient;
   final Random _random = Random.secure();
+
+  static http.Client _createSharedHttpClient() {
+    final client = HttpClient()..maxConnectionsPerHost = 4;
+    return IOClient(client);
+  }
 
   Future<void> ping() async {
     await _request('ping');
@@ -405,35 +417,133 @@ class SubsonicApiClient {
     String method, [
     Map<String, List<String>> parameters = const {},
   ]) async {
-    final response = await _httpClient.get(_methodUriAll(method, parameters));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw SubsonicApiException(
-        'HTTP ${response.statusCode}: ${response.reasonPhrase ?? '请求失败'}',
+    try {
+      final response = await _getWithRetry(
+        method,
+        _methodUriAll(method, parameters),
       );
-    }
-
-    final decoded = jsonDecode(response.body);
-    if (decoded is! Map) {
-      throw const SubsonicApiException('Subsonic 响应格式无效。');
-    }
-
-    final root = decoded['subsonic-response'];
-    if (root is! Map) {
-      throw const SubsonicApiException('缺少 Subsonic 响应根节点。');
-    }
-
-    final status = root['status']?.toString();
-    if (status == 'failed') {
-      final error = root['error'];
-      if (error is Map) {
-        final code = error['code']?.toString() ?? 'unknown';
-        final message = error['message']?.toString() ?? '请求失败';
-        throw SubsonicApiException('Subsonic $code: $message');
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw SubsonicApiException(
+          'HTTP ${response.statusCode}: ${response.reasonPhrase ?? '请求失败'}',
+        );
       }
-      throw const SubsonicApiException('Subsonic 请求失败。');
-    }
 
-    return Map<String, Object?>.from(root);
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map) {
+        throw const SubsonicApiException('Subsonic 响应格式无效。');
+      }
+
+      final root = decoded['subsonic-response'];
+      if (root is! Map) {
+        throw const SubsonicApiException('缺少 Subsonic 响应根节点。');
+      }
+
+      final status = root['status']?.toString();
+      if (status == 'failed') {
+        final error = root['error'];
+        if (error is Map) {
+          final code = error['code']?.toString() ?? 'unknown';
+          final message = error['message']?.toString() ?? '请求失败';
+          throw SubsonicApiException('Subsonic $code: $message');
+        }
+        throw const SubsonicApiException('Subsonic 请求失败。');
+      }
+
+      final successLabel = method == 'scrobble'
+          ? parameters['submission']?.firstOrNull == 'true'
+                ? 'Subsonic scrobble（播放计次）请求成功'
+                : 'Subsonic scrobble（正在播放）请求成功'
+          : 'Subsonic $method 请求成功';
+      AppLogger.instance.debug('network', successLabel);
+      return Map<String, Object?>.from(root);
+    } catch (error, stackTrace) {
+      AppLogger.instance.error(
+        'network',
+        'Subsonic $method 请求失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      final userFacingError = _userFacingNetworkError(error);
+      if (!identical(userFacingError, error)) {
+        Error.throwWithStackTrace(userFacingError, stackTrace);
+      }
+      rethrow;
+    }
+  }
+
+  Future<http.Response> _getWithRetry(String method, Uri uri) async {
+    final canRetry = _isReadOnlyMethod(method);
+    for (var attempt = 0; ; attempt += 1) {
+      try {
+        final response = await _httpClient.get(uri);
+        if (canRetry &&
+            attempt < _readRetryDelays.length &&
+            _isRetryableStatusCode(response.statusCode)) {
+          AppLogger.instance.warning(
+            'network',
+            'Subsonic $method 返回 HTTP ${response.statusCode}，正在重试',
+          );
+          await _waitBeforeRetry(attempt);
+          continue;
+        }
+        return response;
+      } catch (error, stackTrace) {
+        if (!canRetry ||
+            attempt >= _readRetryDelays.length ||
+            !_isRetryableNetworkError(error)) {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        AppLogger.instance.warning(
+          'network',
+          'Subsonic $method 连接中断，正在进行第 ${attempt + 1} 次重试',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        await _waitBeforeRetry(attempt);
+      }
+    }
+  }
+
+  Future<void> _waitBeforeRetry(int attempt) {
+    final baseDelay = _readRetryDelays[attempt].inMilliseconds;
+    final jitter = _random.nextInt(250);
+    return Future<void>.delayed(Duration(milliseconds: baseDelay + jitter));
+  }
+
+  static bool _isReadOnlyMethod(String method) {
+    return method == 'ping' || method == 'search3' || method.startsWith('get');
+  }
+
+  static bool _isRetryableStatusCode(int statusCode) {
+    return statusCode == HttpStatus.requestTimeout ||
+        statusCode == HttpStatus.tooManyRequests ||
+        statusCode >= HttpStatus.internalServerError;
+  }
+
+  static bool _isRetryableNetworkError(Object error) {
+    if (error is HandshakeException) {
+      return !_isCertificateError(error.message);
+    }
+    return error is SocketException || error is http.ClientException;
+  }
+
+  static Object _userFacingNetworkError(Object error) {
+    if (error is HandshakeException) {
+      if (_isCertificateError(error.message)) {
+        return const SubsonicApiException('服务器安全证书验证失败，请检查音源地址或证书。');
+      }
+      return const SubsonicApiException('与音乐服务器建立安全连接失败，请检查网络后重试。');
+    }
+    if (error is SocketException || error is http.ClientException) {
+      return const SubsonicApiException('无法连接音乐服务器，请检查网络或稍后重试。');
+    }
+    return error;
+  }
+
+  static bool _isCertificateError(String message) {
+    final normalized = message.toLowerCase();
+    return normalized.contains('certificate') ||
+        normalized.contains('cert_verify_failed');
   }
 
   Uri _methodUri(

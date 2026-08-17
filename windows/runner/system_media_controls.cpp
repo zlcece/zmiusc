@@ -284,7 +284,9 @@ struct SystemMediaControls::Impl {
     if (window == nullptr) {
       return;
     }
-    ::SetWindowTextW(window, L"Zmusic");
+    const auto window_title = winrt::to_hstring(
+        state.has_track && !state.title.empty() ? state.title : "Zmusic");
+    ::SetWindowTextW(window, window_title.c_str());
   }
 
   void ClearArtwork() {

@@ -5,17 +5,27 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' as media_kit;
 
+import 'app_logger.dart';
 import 'audio_cache.dart';
 import 'models.dart';
 import 'playback_source.dart';
 import 'streaming_audio_cache_source.dart';
+
+const Duration _playbackOpenInterruptTimeout = Duration(seconds: 3);
 
 class PlayerController extends ChangeNotifier {
   PlayerController({
     @visibleForTesting PlaybackEngine? playbackEngine,
     @visibleForTesting
     this._startupRecoveryTimeout = const Duration(seconds: 12),
-  }) : _audioPlayer = playbackEngine ?? _createPlaybackEngine() {
+    @visibleForTesting this._startupRecoveryAttempts = 2,
+    @visibleForTesting Duration? startupSwitchSettleDelay,
+  }) : _audioPlayer = playbackEngine ?? _createPlaybackEngine(),
+       _startupSwitchSettleDelay =
+           startupSwitchSettleDelay ??
+           (_isFlutterTestEnvironment()
+               ? Duration.zero
+               : const Duration(milliseconds: 600)) {
     _completedSubscription = _audioPlayer.completedStream.listen((completed) {
       if (completed) {
         unawaited(_handlePlaybackCompleted());
@@ -44,6 +54,8 @@ class PlayerController extends ChangeNotifier {
 
   final PlaybackEngine _audioPlayer;
   final Duration _startupRecoveryTimeout;
+  final int _startupRecoveryAttempts;
+  final Duration _startupSwitchSettleDelay;
   final Random _random = Random();
 
   Future<PlaybackTrack> Function(Track track)? trackResolver;
@@ -56,6 +68,7 @@ class PlayerController extends ChangeNotifier {
   late final StreamSubscription<bool> _bufferingSubscription;
   StreamSubscription<double>? _cacheProgressSubscription;
   StreamingAudioCacheProxy? _streamingCacheProxy;
+  File? _activePlaybackCacheFile;
   StreamSubscription<double>? _nextTrackPrefetchProgressSubscription;
   _NextTrackPrefetch? _nextTrackPrefetch;
   final StreamController<Duration> _cacheBufferedPositionController =
@@ -70,8 +83,9 @@ class PlayerController extends ChangeNotifier {
   PlaybackMode _playbackMode = PlaybackMode.sequential;
   bool _handlingPlaybackCompleted = false;
   bool _streamingCacheCompleteMarked = false;
-  bool _nextTrackPrefetchCompleteMarked = false;
   double? _streamingCacheProgress;
+  Future<void>? _streamingCacheCompletionFuture;
+  int? _startupRecoveryInFlightRequestId;
   int _playRequestId = 0;
   int _playSessionId = 0;
   int _nextTrackPrefetchRequestId = 0;
@@ -101,6 +115,7 @@ class PlayerController extends ChangeNotifier {
     final paths = <String>{
       if (_streamingCacheProxy case final proxy?) proxy.cacheFile.path,
       if (_nextTrackPrefetch case final prefetch?) prefetch.cacheFile.path,
+      if (_activePlaybackCacheFile case final file?) file.path,
     };
     final currentUri = Uri.tryParse(currentTrack?.streamUrl ?? '');
     if (currentUri != null && currentUri.scheme == 'file') {
@@ -300,6 +315,7 @@ class PlayerController extends ChangeNotifier {
       await _audioPlayer.stop();
       await _clearStreamingCacheProgress();
     });
+    _activePlaybackCacheFile = null;
     _queue = [];
     _currentIndex = null;
     _currentTrackNeedsOpening = false;
@@ -347,6 +363,7 @@ class PlayerController extends ChangeNotifier {
         await _stopAudioForTransition();
         await _clearStreamingCacheProgress();
       });
+      _activePlaybackCacheFile = null;
       notifyListeners();
       return;
     }
@@ -388,9 +405,18 @@ class PlayerController extends ChangeNotifier {
   Future<void> _playIndex(
     int index,
     int requestId, {
-    bool allowStartupRecovery = true,
+    int? startupRecoveryAttemptsRemaining,
     bool startNewSession = true,
   }) async {
+    final recoveryAttemptsRemaining =
+        startupRecoveryAttemptsRemaining ?? _startupRecoveryAttempts;
+    final shouldSettleStartupSwitch =
+        _startupSwitchSettleDelay > Duration.zero &&
+        (_currentIndex == null ||
+            _currentTrackNeedsOpening ||
+            _openingPlaybackRequestId != null ||
+            (_audioPlayer.position < const Duration(seconds: 1) &&
+                (_audioPlayer.buffering || _audioPlayer.playing)));
     _cancelStartupRecovery();
     _currentIndex = index;
     _currentTrackNeedsOpening = true;
@@ -418,7 +444,15 @@ class PlayerController extends ChangeNotifier {
     if (!_shouldApplyPlaybackRequest(requestId, index)) {
       return;
     }
-    await _clearStreamingCacheProgress(waitForProxy: false);
+
+    if (shouldSettleStartupSwitch) {
+      await Future<void>.delayed(_startupSwitchSettleDelay);
+      if (!_shouldApplyPlaybackRequest(requestId, index)) {
+        return;
+      }
+    }
+    await _clearStreamingCacheProgress();
+    _activePlaybackCacheFile = null;
     if (!_shouldApplyPlaybackRequest(requestId, index)) {
       return;
     }
@@ -434,8 +468,8 @@ class PlayerController extends ChangeNotifier {
       notifyListeners();
     }
 
-    if (allowStartupRecovery) {
-      _armStartupRecovery(requestId, index);
+    if (recoveryAttemptsRemaining >= 0) {
+      _armStartupRecovery(requestId, index, recoveryAttemptsRemaining);
     }
     _openingPlaybackRequestId = requestId;
     try {
@@ -445,6 +479,7 @@ class PlayerController extends ChangeNotifier {
         }
         final uri = Uri.tryParse(track.streamUrl);
         if (uri != null && uri.scheme == 'file') {
+          _activePlaybackCacheFile = File(uri.toFilePath());
           await _audioPlayer.openAndPlay(uri.toString());
         } else if (uri != null &&
             (uri.scheme == 'http' || uri.scheme == 'https') &&
@@ -454,7 +489,13 @@ class PlayerController extends ChangeNotifier {
               prefetchedPlayback?.proxy ??
               StreamingAudioCacheProxy(uri, cacheFile: cacheFile);
           final localUri = prefetchedPlayback?.localUri ?? await proxy.start();
-          _watchStreamingCacheProgress(proxy, cacheFile);
+          _watchStreamingCacheProgress(
+            proxy,
+            cacheFile,
+            requestId,
+            index,
+            recoveryAttemptsRemaining,
+          );
           await _audioPlayer.openAndPlay(localUri.toString());
         } else {
           await _audioPlayer.openAndPlay(track.streamUrl);
@@ -463,12 +504,19 @@ class PlayerController extends ChangeNotifier {
           return;
         }
       });
-    } catch (_) {
+    } catch (error, stackTrace) {
       if (!_shouldApplyPlaybackRequest(requestId, index)) {
         return;
       }
       _cancelStartupRecovery();
-      rethrow;
+      AppLogger.instance.warning(
+        'player',
+        '播放启动失败，正在执行恢复',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      await _recoverStalledStartup(index, requestId, recoveryAttemptsRemaining);
+      return;
     } finally {
       if (_openingPlaybackRequestId == requestId) {
         _openingPlaybackRequestId = null;
@@ -485,7 +533,11 @@ class PlayerController extends ChangeNotifier {
   Future<void> _interruptSupersededOpening(int requestId) async {
     final openingRequestId = _openingPlaybackRequestId;
     final audioPlayer = _audioPlayer;
-    if (openingRequestId == null || openingRequestId == requestId) {
+    final replacingStartup =
+        audioPlayer.position < const Duration(seconds: 1) &&
+        (audioPlayer.buffering || audioPlayer.playing);
+    if ((openingRequestId == null || openingRequestId == requestId) &&
+        !replacingStartup) {
       return;
     }
     if (audioPlayer is! _InterruptiblePlaybackEngine) {
@@ -493,22 +545,40 @@ class PlayerController extends ChangeNotifier {
     }
     final interruptiblePlayer = audioPlayer as _InterruptiblePlaybackEngine;
     _openingPlaybackRequestId = null;
-    try {
-      await interruptiblePlayer.interruptPendingOpen();
-    } catch (error, stackTrace) {
-      debugPrint('Failed to interrupt the previous playback opening: $error');
-      debugPrint('$stackTrace');
-    }
+    final interruption = () async {
+      try {
+        await interruptiblePlayer.interruptPendingOpen().timeout(
+          _playbackOpenInterruptTimeout,
+        );
+      } catch (error, stackTrace) {
+        AppLogger.instance.warning(
+          'player',
+          '中断上一个播放加载失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+    }();
+
+    // A stalled open must not keep every later playback request queued behind
+    // its never-completing Future. The interrupt becomes the new queue head.
+    _audioOperation = interruption;
+    await interruption;
   }
 
   void _watchStreamingCacheProgress(
     StreamingAudioCacheProxy proxy,
     File cacheFile,
+    int requestId,
+    int index,
+    int recoveryAttemptsRemaining,
   ) {
     _cacheProgressSubscription?.cancel();
     _streamingCacheProxy = proxy;
+    _activePlaybackCacheFile = null;
     _streamingCacheProgress = 0;
     _streamingCacheCompleteMarked = false;
+    _streamingCacheCompletionFuture = null;
     _emitBufferedPosition();
     notifyListeners();
     _cacheProgressSubscription = proxy.downloadProgressStream.listen((
@@ -518,11 +588,68 @@ class PlayerController extends ChangeNotifier {
       _streamingCacheProgress = normalized;
       if (normalized >= 1 && !_streamingCacheCompleteMarked) {
         _streamingCacheCompleteMarked = true;
-        unawaited(_markStreamingCacheComplete(cacheFile));
-        _maybeStartNextTrackPrefetch();
+        final completion = _finalizeStreamingCache(proxy, cacheFile);
+        _streamingCacheCompletionFuture = completion;
+        unawaited(
+          completion.then((_) {
+            if (!identical(_streamingCacheProxy, proxy) ||
+                !_shouldApplyPlaybackRequest(requestId, index) ||
+                _audioPlayer.position >= const Duration(seconds: 1) ||
+                (!_audioPlayer.buffering && _audioPlayer.playing)) {
+              return;
+            }
+            unawaited(
+              _recoverStalledStartup(
+                index,
+                requestId,
+                recoveryAttemptsRemaining,
+              ),
+            );
+          }),
+        );
       }
       _emitBufferedPosition();
     });
+    unawaited(
+      proxy.prefetch().catchError((Object error, StackTrace stackTrace) {
+        if (!identical(_streamingCacheProxy, proxy)) {
+          return;
+        }
+        AppLogger.instance.warning(
+          'cache',
+          '后台缓存当前歌曲失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        if (_shouldApplyPlaybackRequest(requestId, index)) {
+          unawaited(
+            _recoverStalledStartup(index, requestId, recoveryAttemptsRemaining),
+          );
+        }
+      }),
+    );
+  }
+
+  Future<void> _finalizeStreamingCache(
+    StreamingAudioCacheProxy proxy,
+    File cacheFile,
+  ) async {
+    try {
+      // Progress reaches 100% before the proxy download Future has returned.
+      // Wait for the writer to close before publishing the completion marker.
+      await proxy.prefetch();
+      await _markStreamingCacheComplete(cacheFile);
+      if (identical(_streamingCacheProxy, proxy)) {
+        _maybeStartNextTrackPrefetch();
+      }
+    } catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'cache',
+        '确认音频缓存完成失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   Future<void> _markStreamingCacheComplete(File cacheFile) async {
@@ -535,8 +662,12 @@ class PlayerController extends ChangeNotifier {
         await Future<void>.delayed(const Duration(milliseconds: 100));
       }
     } catch (error, stackTrace) {
-      debugPrint('Failed to mark audio cache complete: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.warning(
+        'cache',
+        '标记音频缓存完成失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -547,19 +678,33 @@ class PlayerController extends ChangeNotifier {
     _streamingCacheProxy = null;
     _streamingCacheProgress = null;
     _streamingCacheCompleteMarked = false;
+    _streamingCacheCompletionFuture = null;
     await subscription?.cancel();
     final cancellation = proxy?.cancel();
     if (cancellation == null) {
       return;
     }
     if (waitForProxy) {
-      await cancellation;
+      try {
+        await cancellation.timeout(const Duration(seconds: 2));
+      } catch (error, stackTrace) {
+        AppLogger.instance.warning(
+          'cache',
+          '等待上一个音频缓存代理关闭超时',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
       return;
     }
     unawaited(
       cancellation.catchError((Object error, StackTrace stackTrace) {
-        debugPrint('Failed to close the previous audio cache proxy: $error');
-        debugPrint('$stackTrace');
+        AppLogger.instance.warning(
+          'cache',
+          '关闭上一个音频缓存代理失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
       }),
     );
   }
@@ -572,7 +717,6 @@ class PlayerController extends ChangeNotifier {
     _nextTrackPrefetchProgressSubscription = null;
     final prefetch = _nextTrackPrefetch;
     _nextTrackPrefetch = null;
-    _nextTrackPrefetchCompleteMarked = false;
     if (clearPreparedShuffleIndex) {
       _preparedShuffleNextIndex = null;
     }
@@ -582,8 +726,12 @@ class PlayerController extends ChangeNotifier {
     }
     unawaited(
       cancellation.catchError((Object error, StackTrace stackTrace) {
-        debugPrint('Failed to close the next track prefetch proxy: $error');
-        debugPrint('$stackTrace');
+        AppLogger.instance.warning(
+          'cache',
+          '关闭下一首预取代理失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
       }),
     );
   }
@@ -597,7 +745,6 @@ class PlayerController extends ChangeNotifier {
     unawaited(_nextTrackPrefetchProgressSubscription?.cancel());
     _nextTrackPrefetchProgressSubscription = null;
     _nextTrackPrefetch = null;
-    _nextTrackPrefetchCompleteMarked = false;
     _preparedShuffleNextIndex = null;
     return prefetch;
   }
@@ -615,6 +762,12 @@ class PlayerController extends ChangeNotifier {
     }
     final target = _nextTrackToPrefetch();
     if (target == null) {
+      unawaited(_clearNextTrackPrefetch());
+      return;
+    }
+    final currentTrack = this.currentTrack;
+    if (currentTrack != null &&
+        _trackCacheIdentity(currentTrack) == _trackCacheIdentity(target)) {
       unawaited(_clearNextTrackPrefetch());
       return;
     }
@@ -667,16 +820,8 @@ class PlayerController extends ChangeNotifier {
         proxy: proxy,
         localUri: localUri,
       );
-      _nextTrackPrefetchCompleteMarked = false;
       await _nextTrackPrefetchProgressSubscription?.cancel();
-      _nextTrackPrefetchProgressSubscription = proxy.downloadProgressStream
-          .listen((progress) {
-            final normalized = progress.clamp(0.0, 1.0).toDouble();
-            if (normalized >= 1 && !_nextTrackPrefetchCompleteMarked) {
-              _nextTrackPrefetchCompleteMarked = true;
-              unawaited(_markStreamingCacheComplete(cacheFile));
-            }
-          });
+      _nextTrackPrefetchProgressSubscription = null;
       await proxy.prefetch();
       if (!_shouldContinueNextTrackPrefetch(requestId, key)) {
         return;
@@ -686,8 +831,12 @@ class PlayerController extends ChangeNotifier {
         await _clearNextTrackPrefetch(clearPreparedShuffleIndex: false);
       }
     } catch (error, stackTrace) {
-      debugPrint('Failed to prefetch the next track: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.warning(
+        'cache',
+        '预取下一首歌曲失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       if (_shouldContinueNextTrackPrefetch(requestId, key)) {
         await _clearNextTrackPrefetch();
       }
@@ -772,16 +921,36 @@ class PlayerController extends ChangeNotifier {
     ].join('|');
   }
 
+  String _trackCacheIdentity(Track track) {
+    final sourceServerId = track.sourceServerId?.trim();
+    final sourceItemId = track.sourceItemId?.trim();
+    if (sourceServerId != null &&
+        sourceServerId.isNotEmpty &&
+        sourceItemId != null &&
+        sourceItemId.isNotEmpty) {
+      return '${track.sourceType.name}:$sourceServerId:$sourceItemId';
+    }
+    return track.streamUrl;
+  }
+
   Future<void> _stopAudioForTransition() async {
     try {
       await _audioPlayer.stop().timeout(const Duration(seconds: 3));
     } catch (error, stackTrace) {
-      debugPrint('Audio stop stalled during playback transition: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.warning(
+        'player',
+        '切歌时停止旧音频超时',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 
-  void _armStartupRecovery(int requestId, int index) {
+  void _armStartupRecovery(
+    int requestId,
+    int index,
+    int recoveryAttemptsRemaining,
+  ) {
     _cancelStartupRecovery();
     if (_startupRecoveryTimeout <= Duration.zero) {
       return;
@@ -789,6 +958,11 @@ class PlayerController extends ChangeNotifier {
     _startupRecoveryTimer = Timer(_startupRecoveryTimeout, () {
       _startupRecoveryTimer = null;
       if (!_shouldApplyPlaybackRequest(requestId, index)) {
+        return;
+      }
+      final streamingProxy = _streamingCacheProxy;
+      if (streamingProxy != null && streamingProxy.isDownloading) {
+        _armStartupRecovery(requestId, index, recoveryAttemptsRemaining);
         return;
       }
       final opening = _openingPlaybackRequestId == requestId;
@@ -800,28 +974,118 @@ class PlayerController extends ChangeNotifier {
       if (!stalled) {
         return;
       }
-      unawaited(_recoverStalledStartup(index, requestId));
+      unawaited(
+        _recoverStalledStartup(index, requestId, recoveryAttemptsRemaining),
+      );
     });
   }
 
-  Future<void> _recoverStalledStartup(int index, int requestId) async {
+  Future<void> _recoverStalledStartup(
+    int index,
+    int requestId,
+    int recoveryAttemptsRemaining,
+  ) async {
     if (!_shouldApplyPlaybackRequest(requestId, index)) {
       return;
     }
-    debugPrint('Playback startup stalled; retrying the current track once.');
-    final retryRequestId = ++_playRequestId;
+    if (_startupRecoveryInFlightRequestId == requestId) {
+      return;
+    }
+    _startupRecoveryInFlightRequestId = requestId;
+    AppLogger.instance.warning('player', '播放启动停滞，正在重试当前歌曲');
     try {
+      final cacheFinished = (_streamingCacheProgress ?? 0) >= 1;
+      final completedCacheFile = cacheFinished
+          ? _streamingCacheProxy?.cacheFile
+          : null;
+      final cacheCompletion = cacheFinished
+          ? _streamingCacheCompletionFuture
+          : null;
+      if (cacheCompletion != null) {
+        await cacheCompletion;
+        if (!_shouldApplyPlaybackRequest(requestId, index)) {
+          return;
+        }
+      }
+      if (completedCacheFile != null &&
+          isCompletedAudioCacheFile(completedCacheFile)) {
+        await _recoverFromCompletedCache(index, requestId, completedCacheFile);
+        return;
+      }
+      if (recoveryAttemptsRemaining <= 0) {
+        await _failStalledStartup(index, requestId);
+        return;
+      }
+      final retryRequestId = ++_playRequestId;
       await _playIndex(
         index,
         retryRequestId,
-        allowStartupRecovery: false,
+        startupRecoveryAttemptsRemaining: recoveryAttemptsRemaining - 1,
         startNewSession: false,
       );
-    } catch (error, stackTrace) {
-      debugPrint('Playback startup recovery failed: $error');
-      debugPrint('$stackTrace');
-      notifyListeners();
+    } finally {
+      if (_startupRecoveryInFlightRequestId == requestId) {
+        _startupRecoveryInFlightRequestId = null;
+      }
     }
+  }
+
+  Future<void> _failStalledStartup(int index, int requestId) async {
+    if (!_shouldApplyPlaybackRequest(requestId, index)) {
+      return;
+    }
+    final failureRequestId = ++_playRequestId;
+    _cancelStartupRecovery();
+    await _interruptSupersededOpening(failureRequestId);
+    if (!_shouldApplyPlaybackRequest(failureRequestId, index)) {
+      return;
+    }
+    await _stopAudioForTransition();
+    await _clearStreamingCacheProgress(waitForProxy: false);
+    _activePlaybackCacheFile = null;
+    _currentTrackNeedsOpening = true;
+    AppLogger.instance.error('player', '播放启动多次失败，已停止缓冲，可手动重试当前歌曲');
+    notifyListeners();
+  }
+
+  Future<void> _recoverFromCompletedCache(
+    int index,
+    int requestId,
+    File cacheFile,
+  ) async {
+    if (!_shouldApplyPlaybackRequest(requestId, index)) {
+      return;
+    }
+    final retryRequestId = ++_playRequestId;
+    _cancelStartupRecovery();
+    await _interruptSupersededOpening(retryRequestId);
+    if (!_shouldApplyPlaybackRequest(retryRequestId, index)) {
+      return;
+    }
+    await _clearStreamingCacheProgress();
+    if (!_shouldApplyPlaybackRequest(retryRequestId, index)) {
+      return;
+    }
+    _activePlaybackCacheFile = cacheFile;
+    _openingPlaybackRequestId = retryRequestId;
+    try {
+      await _runAudioOperation(() async {
+        if (!_shouldApplyPlaybackRequest(retryRequestId, index)) {
+          return;
+        }
+        await _audioPlayer.openAndPlay(Uri.file(cacheFile.path).toString());
+      });
+    } finally {
+      if (_openingPlaybackRequestId == retryRequestId) {
+        _openingPlaybackRequestId = null;
+      }
+    }
+    if (!_shouldApplyPlaybackRequest(retryRequestId, index)) {
+      return;
+    }
+    _currentTrackNeedsOpening = !_audioPlayer.playing;
+    _maybeStartNextTrackPrefetch();
+    notifyListeners();
   }
 
   void _cancelStartupRecovery() {
@@ -1047,8 +1311,12 @@ class PlayerController extends ChangeNotifier {
         try {
           nextQueue = await sequentialQueueCompletionProvider();
         } catch (error, stackTrace) {
-          debugPrint('Sequential queue completion provider failed: $error');
-          debugPrint('$stackTrace');
+          AppLogger.instance.error(
+            'player',
+            '顺序队列结束后加载随机歌曲失败',
+            error: error,
+            stackTrace: stackTrace,
+          );
           nextQueue = const [];
         }
         if (_playRequestId != completionRequestId ||
@@ -1066,8 +1334,12 @@ class PlayerController extends ChangeNotifier {
       await _audioPlayer.pause();
       await _audioPlayer.seek(Duration.zero);
     } catch (error, stackTrace) {
-      debugPrint('Playback completion handling failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.error(
+        'player',
+        '处理歌曲播放完成事件失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
     } finally {
       _handlingPlaybackCompleted = false;
       notifyListeners();
@@ -1174,15 +1446,73 @@ abstract interface class _InterruptiblePlaybackEngine {
 
 class _MediaKitPlaybackEngine
     implements PlaybackEngine, _InterruptiblePlaybackEngine {
-  _MediaKitPlaybackEngine()
-    : _player = media_kit.Player(
-        configuration: const media_kit.PlayerConfiguration(
-          title: 'Zmusic',
-          bufferSize: 64 * 1024 * 1024,
-        ),
-      );
+  _MediaKitPlaybackEngine() {
+    _player = _createPlayer();
+    _bindPlayer(_player);
+  }
 
-  final media_kit.Player _player;
+  late media_kit.Player _player;
+  int _playerGeneration = 0;
+  List<StreamSubscription<dynamic>> _playerSubscriptions = const [];
+  final StreamController<bool> _completedController =
+      StreamController<bool>.broadcast();
+  final StreamController<Duration?> _durationController =
+      StreamController<Duration?>.broadcast();
+  final StreamController<Duration> _positionController =
+      StreamController<Duration>.broadcast();
+  final StreamController<Duration> _bufferController =
+      StreamController<Duration>.broadcast();
+  final StreamController<bool> _playingController =
+      StreamController<bool>.broadcast();
+  final StreamController<bool> _bufferingController =
+      StreamController<bool>.broadcast();
+
+  static media_kit.Player _createPlayer() {
+    return media_kit.Player(
+      configuration: const media_kit.PlayerConfiguration(
+        title: 'Zmusic',
+        bufferSize: 64 * 1024 * 1024,
+      ),
+    );
+  }
+
+  void _bindPlayer(media_kit.Player player) {
+    final generation = ++_playerGeneration;
+    bool current() =>
+        generation == _playerGeneration && identical(player, _player);
+    _playerSubscriptions = [
+      player.stream.completed.listen((value) {
+        if (current() && !_completedController.isClosed) {
+          _completedController.add(value);
+        }
+      }),
+      player.stream.duration.listen((value) {
+        if (current() && !_durationController.isClosed) {
+          _durationController.add(value == Duration.zero ? null : value);
+        }
+      }),
+      player.stream.position.listen((value) {
+        if (current() && !_positionController.isClosed) {
+          _positionController.add(value);
+        }
+      }),
+      player.stream.buffer.listen((value) {
+        if (current() && !_bufferController.isClosed) {
+          _bufferController.add(value);
+        }
+      }),
+      player.stream.playing.listen((value) {
+        if (current() && !_playingController.isClosed) {
+          _playingController.add(value);
+        }
+      }),
+      player.stream.buffering.listen((value) {
+        if (current() && !_bufferingController.isClosed) {
+          _bufferingController.add(value);
+        }
+      }),
+    ];
+  }
 
   @override
   bool get playing => _player.state.playing;
@@ -1203,44 +1533,69 @@ class _MediaKitPlaybackEngine
   Duration get bufferedPosition => _player.state.buffer;
 
   @override
-  Stream<bool> get completedStream => _player.stream.completed;
+  Stream<bool> get completedStream => _completedController.stream;
 
   @override
-  Stream<Duration?> get durationStream => _player.stream.duration.map(
-    (duration) => duration == Duration.zero ? null : duration,
-  );
+  Stream<Duration?> get durationStream => _durationController.stream;
 
   @override
-  Stream<Duration> get positionStream => _player.stream.position;
+  Stream<Duration> get positionStream => _positionController.stream;
 
   @override
-  Stream<Duration> get bufferedPositionStream => _player.stream.buffer;
+  Stream<Duration> get bufferedPositionStream => _bufferController.stream;
 
   @override
-  Stream<bool> get playingStream => _player.stream.playing;
+  Stream<bool> get playingStream => _playingController.stream;
 
   @override
-  Stream<bool> get bufferingStream => _player.stream.buffering;
+  Stream<bool> get bufferingStream => _bufferingController.stream;
 
   @override
   Future<void> open(String url) async {
-    await _player.open(media_kit.Media(url), play: false);
+    await _open(url, play: false);
   }
 
   @override
   Future<void> openAndPlay(String url) async {
-    await _player.open(media_kit.Media(url), play: true);
+    await _open(url, play: true);
+  }
+
+  Future<void> _open(String url, {required bool play}) async {
+    final player = _player;
+    final platform = player.platform;
+    if (platform is media_kit.NativePlayer) {
+      await platform.open(
+        media_kit.Media(url),
+        play: play,
+        synchronized: false,
+      );
+      return;
+    }
+    await player.open(media_kit.Media(url), play: play);
   }
 
   @override
   Future<void> interruptPendingOpen() async {
-    final platform = _player.platform;
-    if (platform is media_kit.NativePlayer) {
-      final dynamic nativePlayer = platform;
-      await nativePlayer.stop(open: true, synchronized: false);
-      return;
-    }
-    await _player.stop();
+    final previousPlayer = _player;
+    final previousSubscriptions = _playerSubscriptions;
+    final volume = previousPlayer.state.volume;
+    _player = _createPlayer();
+    _bindPlayer(_player);
+    await Future.wait(previousSubscriptions.map((value) => value.cancel()));
+    await _player.setVolume(volume);
+    unawaited(
+      previousPlayer.dispose().timeout(const Duration(seconds: 3)).catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        AppLogger.instance.warning(
+          'player',
+          '释放已被替换的播放器失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }),
+    );
   }
 
   @override
@@ -1259,7 +1614,17 @@ class _MediaKitPlaybackEngine
   Future<void> setVolume(double volume) => _player.setVolume(volume * 100);
 
   @override
-  Future<void> dispose() => _player.dispose();
+  Future<void> dispose() async {
+    _playerGeneration++;
+    await Future.wait(_playerSubscriptions.map((value) => value.cancel()));
+    await _player.dispose();
+    await _completedController.close();
+    await _durationController.close();
+    await _positionController.close();
+    await _bufferController.close();
+    await _playingController.close();
+    await _bufferingController.close();
+  }
 }
 
 class _MemoryPlaybackEngine implements PlaybackEngine {

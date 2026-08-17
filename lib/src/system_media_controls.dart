@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'artwork_cache.dart';
+import 'app_logger.dart';
 import 'player_controller.dart';
 
 const String systemMediaControlsChannelName = 'com.zmusic.app/media_session';
@@ -126,9 +127,9 @@ class SystemMediaControls {
         'durationMs': player.duration?.inMilliseconds ?? 0,
       });
     } on MissingPluginException catch (error) {
-      debugPrint('System media controls are unavailable: $error');
+      AppLogger.instance.warning('media-controls', '系统媒体控制不可用', error: error);
     } on PlatformException catch (error) {
-      debugPrint('Failed to update system media controls: $error');
+      AppLogger.instance.error('media-controls', '更新系统媒体控制失败', error: error);
     }
   }
 
@@ -159,8 +160,13 @@ class SystemMediaControls {
     String resolvedPath = '';
     try {
       resolvedPath = (await manager.cacheArtwork(source))?.path ?? '';
-    } catch (error) {
-      debugPrint('Failed to cache Windows taskbar artwork: $error');
+    } catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'media-controls',
+        '缓存 Windows 任务栏封面失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
     if (_disposed ||
         requestId != _artworkRequestId ||

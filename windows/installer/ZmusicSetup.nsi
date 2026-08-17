@@ -207,14 +207,12 @@ cleanupWait:
 
 cleanupPrompt:
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
-    "Zmusic 已退出，但 Windows 仍在占用部分程序文件。$\r$\n点击“重试”继续等待，或点击“取消”退出安装。" \
+    "Zmusic 或相关程序仍在占用部分程序文件。$\r$\n点击“重试”将再次关闭 Zmusic 并继续安装，或点击“取消”退出安装。" \
     IDRETRY cleanupReset IDCANCEL cleanupCancel
 
 cleanupReset:
   StrCpy $R0 0
-  !ifndef TEST_MODE
-    !insertmacro CloseRunningZmusic
-  !endif
+  !insertmacro CloseRunningZmusic
   Goto cleanupRetry
 
 cleanupCancel:
@@ -229,9 +227,7 @@ Section "Zmusic 主程序（必需）" SEC_MAIN
   SetShellVarContext current
   Call ValidateInstallDirectoryForInstall
 
-  !ifndef TEST_MODE
-    !insertmacro CloseRunningZmusic
-  !endif
+  !insertmacro CloseRunningZmusic
 
   DetailPrint "正在清理旧版本程序文件..."
   Call RemoveExistingProgramFiles

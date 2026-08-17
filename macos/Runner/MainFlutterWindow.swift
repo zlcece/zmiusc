@@ -136,15 +136,9 @@ class MainFlutterWindow: NSWindow {
     let flutterViewController = FlutterViewController()
     let minimumContentSize = NSSize(width: 1088, height: 680)
     self.contentMinSize = minimumContentSize
-    let windowFrame = self.frame
     self.contentViewController = flutterViewController
     self.displayIfNeeded()
-    self.setFrame(windowFrame, display: true)
-    if self.contentLayoutRect.width < minimumContentSize.width
-      || self.contentLayoutRect.height < minimumContentSize.height
-    {
-      self.setContentSize(minimumContentSize)
-    }
+    self.setContentSize(minimumContentSize)
 
     let registrar = flutterViewController.registrar(forPlugin: "ZmusicNativeBridge")
     let fileDropChannel = FlutterMethodChannel(

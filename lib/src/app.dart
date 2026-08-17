@@ -12,6 +12,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_controller.dart';
+import 'app_logger.dart';
 import 'app_update.dart';
 import 'artwork_cache.dart';
 import 'compact_switch.dart';
@@ -24,6 +25,7 @@ import 'settings_models.dart';
 const String _appName = 'Zmusic';
 const String _brandBackgroundAsset = 'assets/branding/zmusic_note.webp';
 const double _defaultPlayerVolume = 0.55;
+const double _mobilePlayerVolume = 1;
 const MethodChannel _androidTaskChannel = MethodChannel('com.zmusic.app/task');
 
 class ZmusicApp extends StatefulWidget {
@@ -374,6 +376,7 @@ class _HomePageState extends State<HomePage> {
   _PlaylistCollection? _activePlaylistCollection;
   _PlaylistTool? _activePlaylistTool;
   bool _showMetadataManager = false;
+  bool _showLogViewer = false;
   String? _activeTrackCollectionTitle;
   List<Track> _activeTrackCollectionTracks = const [];
   bool _didRunStartupUpdateCheck = false;
@@ -385,7 +388,7 @@ class _HomePageState extends State<HomePage> {
     _startLibraryStatusTimer();
     _wasRefreshingLibrary = widget.controller.isRefreshingLibrary;
     widget.controller.addListener(_handleControllerChanged);
-    unawaited(widget.controller.player.setVolume(_defaultPlayerVolume));
+    unawaited(_initializePlayerVolume());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_checkForUpdateOnStartup());
     });
@@ -519,6 +522,14 @@ class _HomePageState extends State<HomePage> {
         key: const ValueKey('metadata-manager-page'),
         controller: controller,
         onBack: _closeMetadataManager,
+      );
+    }
+
+    if (_showLogViewer) {
+      return _AppLogViewerPage(
+        key: const ValueKey('app-log-viewer-page'),
+        controller: controller,
+        onBack: _closeLogViewer,
       );
     }
 
@@ -742,6 +753,7 @@ class _HomePageState extends State<HomePage> {
       onRefreshLibrary: _refreshLibrary,
       onOpenPlaylistCollection: _openPlaylistCollection,
       onOpenMetadataManager: _openMetadataManager,
+      onOpenLogViewer: _openLogViewer,
     );
   }
 
@@ -1135,8 +1147,12 @@ class _HomePageState extends State<HomePage> {
         update: update,
       );
     } catch (error, stackTrace) {
-      debugPrint('Startup update check failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.error(
+        'update',
+        '启动时检查更新失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -1246,6 +1262,18 @@ class _HomePageState extends State<HomePage> {
     setState(() => _showMetadataManager = false);
   }
 
+  void _openLogViewer() {
+    setState(() {
+      _clearSearchText();
+      _resetContentNavigation();
+      _showLogViewer = true;
+    });
+  }
+
+  void _closeLogViewer() {
+    setState(() => _showLogViewer = false);
+  }
+
   void _openBatchAddForPlaylist(LibrarySectionItem playlist) {
     if (!widget.controller.canManageRemotePlaylist(playlist)) {
       _showLibraryStatus('公开歌单只能播放。');
@@ -1309,6 +1337,7 @@ class _HomePageState extends State<HomePage> {
     _activePlaylistCollection = null;
     _activePlaylistTool = null;
     _showMetadataManager = false;
+    _showLogViewer = false;
     _activeTrackCollectionTitle = null;
     _activeTrackCollectionTracks = const [];
   }
@@ -1327,6 +1356,10 @@ class _HomePageState extends State<HomePage> {
     }
     if (_showMetadataManager) {
       _closeMetadataManager();
+      return true;
+    }
+    if (_showLogViewer) {
+      _closeLogViewer();
       return true;
     }
     if (_activePlaylistTool != null) {
@@ -1369,6 +1402,20 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => _volume = nextVolume);
     widget.controller.player.setVolume(nextVolume);
+  }
+
+  Future<void> _initializePlayerVolume() async {
+    final initialVolume =
+        defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS
+        ? _mobilePlayerVolume
+        : _defaultPlayerVolume;
+    if (!mounted) {
+      return;
+    }
+    _volume = initialVolume;
+    _lastNonZeroVolume = initialVolume;
+    await widget.controller.player.setVolume(initialVolume);
   }
 
   void _toggleMute() {
@@ -1762,6 +1809,7 @@ class _SettingsPage extends StatefulWidget {
     required this.onBack,
     required this.onRefreshLibrary,
     required this.onOpenMetadataManager,
+    required this.onOpenLogViewer,
     this.showBack = true,
   });
 
@@ -1769,6 +1817,7 @@ class _SettingsPage extends StatefulWidget {
   final VoidCallback onBack;
   final Future<void> Function() onRefreshLibrary;
   final VoidCallback onOpenMetadataManager;
+  final VoidCallback onOpenLogViewer;
   final bool showBack;
 
   @override
@@ -1780,6 +1829,8 @@ class _SettingsPageState extends State<_SettingsPage> {
   late Future<int> _cacheSizeFuture;
   late Future<String> _appVersionFuture;
   bool _checkingForUpdate = false;
+  int _usernameTapCount = 0;
+  Timer? _usernameTapResetTimer;
 
   @override
   void initState() {
@@ -1789,6 +1840,12 @@ class _SettingsPageState extends State<_SettingsPage> {
     _appVersionFuture = PackageInfo.fromPlatform().then(
       (packageInfo) => packageInfo.version,
     );
+  }
+
+  @override
+  void dispose() {
+    _usernameTapResetTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -1844,6 +1901,10 @@ class _SettingsPageState extends State<_SettingsPage> {
                           title: widget.controller.selectedUsername.isEmpty
                               ? '未登录'
                               : widget.controller.selectedUsername,
+                          titleKey: const ValueKey(
+                            'settings-log-unlock-target',
+                          ),
+                          onTitleTap: _handleUsernameTap,
                           subtitle: Text(
                             widget.controller.libraryOverview.songCount == null
                                 ? '歌曲数：--'
@@ -2174,6 +2235,53 @@ class _SettingsPageState extends State<_SettingsPage> {
                           ),
                         ],
                       ),
+                    if (widget.controller.logsUnlocked)
+                      _SettingsSection(
+                        key: const ValueKey('settings-log-section'),
+                        title: '日志',
+                        children: [
+                          _SettingsActionTile(
+                            leading: const Icon(Icons.tune_rounded),
+                            title: '日志级别',
+                            subtitle: Text(
+                              _logLevelDescription(_settings.logLevel),
+                            ),
+                            action: DropdownButton<AppLogLevel>(
+                              key: const ValueKey('settings-log-level'),
+                              value: _settings.logLevel,
+                              underline: const SizedBox.shrink(),
+                              items: [
+                                for (final level in AppLogLevel.values)
+                                  DropdownMenuItem(
+                                    value: level,
+                                    child: Text(_logLevelLabel(level)),
+                                  ),
+                              ],
+                              onChanged: (value) {
+                                if (value != null) {
+                                  unawaited(
+                                    _saveSettings(
+                                      _settings.copyWith(logLevel: value),
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                          const Divider(height: 1),
+                          _SettingsActionTile(
+                            leading: const Icon(Icons.article_outlined),
+                            title: '当前日志',
+                            subtitle: const Text('滚动查看当前会话的日志记录'),
+                            action: IconButton(
+                              key: const ValueKey('settings-open-log-viewer'),
+                              tooltip: '查看日志',
+                              onPressed: widget.onOpenLogViewer,
+                              icon: const Icon(Icons.chevron_right),
+                            ),
+                          ),
+                        ],
+                      ),
                     _SettingsSection(
                       title: '关于',
                       children: [
@@ -2397,6 +2505,59 @@ class _SettingsPageState extends State<_SettingsPage> {
     _showSourceMessage(context, widget.controller.statusMessage ?? '系统缓存已清除。');
   }
 
+  void _handleUsernameTap() {
+    if (widget.controller.logsUnlocked) {
+      return;
+    }
+    _usernameTapResetTimer?.cancel();
+    _usernameTapCount += 1;
+    if (_usernameTapCount < 5) {
+      _usernameTapResetTimer = Timer(const Duration(seconds: 2), () {
+        _usernameTapCount = 0;
+      });
+      return;
+    }
+    _usernameTapCount = 0;
+    unawaited(_requestLogUnlock());
+  }
+
+  Future<void> _requestLogUnlock() async {
+    final passwordController = TextEditingController();
+    final password = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('查看日志'),
+        content: TextField(
+          key: const ValueKey('settings-log-unlock-password'),
+          controller: passwordController,
+          autofocus: true,
+          obscureText: true,
+          decoration: const InputDecoration(hintText: '请输入密码'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('settings-log-unlock-confirm'),
+            onPressed: () => Navigator.of(context).pop(passwordController.text),
+            child: const Text('确认'),
+          ),
+        ],
+      ),
+    );
+    passwordController.dispose();
+    if (!mounted || password == null) {
+      return;
+    }
+    if (!widget.controller.unlockLogsForSession(password)) {
+      _showSourceMessage(context, '密码错误。');
+      return;
+    }
+  }
+
   Future<void> _logout() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2477,6 +2638,251 @@ class _SettingsPageState extends State<_SettingsPage> {
     return '${mib.toStringAsFixed(1)} MB';
   }
 }
+
+String _logLevelLabel(AppLogLevel level) {
+  return switch (level) {
+    AppLogLevel.error => '错误',
+    AppLogLevel.warning => '警告',
+    AppLogLevel.info => '信息',
+    AppLogLevel.debug => '调试',
+  };
+}
+
+String _logLevelDescription(AppLogLevel level) {
+  return switch (level) {
+    AppLogLevel.error => '仅记录错误和崩溃信息',
+    AppLogLevel.warning => '记录错误、警告和重试信息',
+    AppLogLevel.info => '记录错误、警告和关键操作',
+    AppLogLevel.debug => '记录所有调试信息',
+  };
+}
+
+class _AppLogViewerPage extends StatefulWidget {
+  const _AppLogViewerPage({
+    required this.controller,
+    required this.onBack,
+    super.key,
+  });
+
+  final AppController controller;
+  final VoidCallback onBack;
+
+  @override
+  State<_AppLogViewerPage> createState() => _AppLogViewerPageState();
+}
+
+class _AppLogViewerPageState extends State<_AppLogViewerPage> {
+  final ScrollController _scrollController = ScrollController();
+  final AppLogger _logger = AppLogger.instance;
+  bool _followLatest = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _logger.addListener(_handleLogChanged);
+    _scrollController.addListener(_handleScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  @override
+  void dispose() {
+    _logger.removeListener(_handleLogChanged);
+    _scrollController
+      ..removeListener(_handleScroll)
+      ..dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = _logger.entries;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: _BackgroundWatermark(
+            logoPath: widget.controller.settings.logoPath,
+            backgroundPath: widget.controller.settings.backgroundPath,
+          ),
+        ),
+        Padding(
+          padding: EdgeInsets.fromLTRB(
+            _isPhoneWidth(context) ? 10 : 16,
+            _isPhoneWidth(context) ? 8 : 16,
+            _isPhoneWidth(context) ? 10 : 16,
+            16,
+          ),
+          child: Column(
+            children: [
+              _DetailPageHeading(
+                title: '当前日志',
+                onBack: widget.onBack,
+                actions: [
+                  IconButton(
+                    key: const ValueKey('copy-current-logs'),
+                    tooltip: '复制日志',
+                    onPressed: entries.isEmpty ? null : _copyLogs,
+                    icon: const Icon(Icons.copy_all_outlined),
+                  ),
+                  if (defaultTargetPlatform == TargetPlatform.windows ||
+                      defaultTargetPlatform == TargetPlatform.macOS ||
+                      defaultTargetPlatform == TargetPlatform.linux)
+                    IconButton(
+                      key: const ValueKey('export-current-logs'),
+                      tooltip: '导出日志',
+                      onPressed: entries.isEmpty ? null : _exportLogs,
+                      icon: const Icon(Icons.save_alt_rounded),
+                    ),
+                  IconButton(
+                    key: const ValueKey('clear-current-logs'),
+                    tooltip: '清除日志',
+                    onPressed: entries.isEmpty ? null : _clearLogs,
+                    icon: const Icon(Icons.delete_sweep_outlined),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 980),
+                    child: _GlassSurface(
+                      padding: EdgeInsets.zero,
+                      darkAlpha: 0.18,
+                      child: entries.isEmpty
+                          ? const Center(child: Text('当前暂无日志'))
+                          : ListView.separated(
+                              key: const ValueKey('current-log-list'),
+                              controller: _scrollController,
+                              padding: const EdgeInsets.all(14),
+                              itemCount: entries.length,
+                              separatorBuilder: (_, _) =>
+                                  const Divider(height: 16),
+                              itemBuilder: (context, index) {
+                                final entry = entries[index];
+                                return SelectionArea(
+                                  child: Text(
+                                    entry.formatted,
+                                    style: TextStyle(
+                                      fontFamily: Platform.isWindows
+                                          ? 'Consolas'
+                                          : 'monospace',
+                                      fontSize: 12,
+                                      height: 1.45,
+                                      color: _logLevelColor(
+                                        context,
+                                        entry.level,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _handleScroll() {
+    if (_scrollController.hasClients) {
+      _followLatest = _scrollController.position.extentAfter < 48;
+    }
+  }
+
+  void _handleLogChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+    if (_followLatest) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    }
+  }
+
+  void _scrollToBottom() {
+    if (!mounted || !_scrollController.hasClients) {
+      return;
+    }
+    _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+  }
+
+  Future<void> _copyLogs() async {
+    final content = await _logger.exportText();
+    if (!mounted || content.isEmpty) {
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: content));
+    if (mounted) {
+      _showSourceMessage(context, '日志已复制。');
+    }
+  }
+
+  Future<void> _exportLogs() async {
+    try {
+      final content = await _logger.exportText();
+      if (content.isEmpty) {
+        return;
+      }
+      final now = DateTime.now();
+      final location = await getSaveLocation(
+        suggestedName:
+            'zmusic-log-${now.year}${_twoDigits(now.month)}${_twoDigits(now.day)}-${_twoDigits(now.hour)}${_twoDigits(now.minute)}.txt',
+      );
+      if (location == null) {
+        return;
+      }
+      await File(location.path).writeAsString(content, flush: true);
+      if (mounted) {
+        _showSourceMessage(context, '日志已导出。');
+      }
+    } catch (error, stackTrace) {
+      _logger.error('logger', '导出日志失败', error: error, stackTrace: stackTrace);
+      if (mounted) {
+        _showSourceMessage(context, '导出日志失败：${_formatError(error)}');
+      }
+    }
+  }
+
+  Future<void> _clearLogs() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清除日志'),
+        content: const Text('确定清除当前日志和本地历史日志文件吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _logger.clear();
+    }
+  }
+}
+
+Color _logLevelColor(BuildContext context, AppLogLevel level) {
+  final colors = Theme.of(context).colorScheme;
+  return switch (level) {
+    AppLogLevel.error => colors.error,
+    AppLogLevel.warning => const Color(0xFFD99A24),
+    AppLogLevel.info => colors.onSurface,
+    AppLogLevel.debug => colors.onSurfaceVariant,
+  };
+}
+
+String _twoDigits(int value) => value.toString().padLeft(2, '0');
 
 Future<void> _showAppUpdateDialog({
   required BuildContext context,
@@ -2675,7 +3081,11 @@ String _formatDownloadBytes(int bytes) {
 }
 
 class _SettingsSection extends StatelessWidget {
-  const _SettingsSection({required this.title, required this.children});
+  const _SettingsSection({
+    required this.title,
+    required this.children,
+    super.key,
+  });
 
   final String? title;
   final List<Widget> children;
@@ -2883,12 +3293,25 @@ class _SettingsActionTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.action,
+    this.titleKey,
+    this.onTitleTap,
   });
 
   final Widget leading;
   final String title;
   final Widget subtitle;
   final Widget action;
+  final Key? titleKey;
+  final VoidCallback? onTitleTap;
+
+  Widget _buildTitle(BuildContext context, {TextStyle? style}) {
+    return GestureDetector(
+      key: titleKey,
+      behavior: HitTestBehavior.opaque,
+      onTap: onTitleTap,
+      child: Text(title, style: style),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2898,7 +3321,7 @@ class _SettingsActionTile extends StatelessWidget {
           return ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 16),
             leading: leading,
-            title: Text(title),
+            title: _buildTitle(context),
             subtitle: subtitle,
             trailing: action,
           );
@@ -2915,7 +3338,10 @@ class _SettingsActionTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(title, style: Theme.of(context).textTheme.bodyLarge),
+                    _buildTitle(
+                      context,
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
                     const SizedBox(height: 2),
                     DefaultTextStyle.merge(
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -3019,10 +3445,14 @@ class _RemotePlaylistDetailPage extends StatefulWidget {
 }
 
 class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
+  static const _pageSizeOptions = <int>[25, 50, 100, 200];
+
   late LibrarySectionItem _playlist;
   late Future<List<Track>> _tracksFuture;
   final Set<int> _selectedRemovalIndexes = <int>{};
   bool _batchRemoving = false;
+  int _pageIndex = 0;
+  int _pageSize = 50;
 
   @override
   void initState() {
@@ -3039,6 +3469,7 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
       _tracksFuture = widget.controller.playlistTracks(_playlist);
       _selectedRemovalIndexes.clear();
       _batchRemoving = false;
+      _pageIndex = 0;
     }
   }
 
@@ -3057,6 +3488,12 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
           future: _tracksFuture,
           builder: (context, snapshot) {
             final tracks = snapshot.data ?? const <Track>[];
+            final pageCount = libraryPageCount(tracks.length, _pageSize);
+            final pageIndex = pageCount == 0
+                ? 0
+                : _pageIndex.clamp(0, pageCount - 1);
+            final pageTracks = libraryPageItems(tracks, pageIndex, _pageSize);
+            final pageStartIndex = pageIndex * _pageSize;
             return ListView(
               padding: const EdgeInsets.fromLTRB(16, 18, 16, 32),
               children: [
@@ -3116,7 +3553,9 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
                         else
                           _TrackList(
                             controller: widget.controller,
-                            tracks: tracks,
+                            tracks: pageTracks,
+                            playbackTracks: tracks,
+                            indexOffset: pageStartIndex,
                             shrinkWrap: true,
                             padding: EdgeInsets.zero,
                             allowTrackActions: canManage,
@@ -3130,6 +3569,25 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
                                 ? (index, track) => _removeTrack(index)
                                 : null,
                           ),
+                        if (tracks.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          _PlaylistTrackPagination(
+                            pageIndex: pageIndex,
+                            pageCount: pageCount,
+                            pageSize: _pageSize,
+                            pageSizeOptions: _pageSizeOptions,
+                            onPageChanged: (value) {
+                              setState(() => _pageIndex = value);
+                            },
+                            onPageSizeChanged: (value) {
+                              setState(() {
+                                _pageSize = value;
+                                _pageIndex = 0;
+                              });
+                            },
+                            onCustomPageSize: _setCustomPageSize,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -3304,6 +3762,155 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
         forceRefresh: true,
       );
     });
+  }
+
+  Future<void> _setCustomPageSize() async {
+    final controller = TextEditingController(text: '$_pageSize');
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('自定义每页数量'),
+        content: TextField(
+          key: const ValueKey('playlist-custom-page-size-input'),
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(hintText: '输入每页歌曲数量'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    final pageSize = int.tryParse(value ?? '');
+    if (!mounted || pageSize == null || pageSize <= 0) {
+      return;
+    }
+    setState(() {
+      _pageSize = pageSize;
+      _pageIndex = 0;
+    });
+  }
+}
+
+class _PlaylistTrackPagination extends StatelessWidget {
+  const _PlaylistTrackPagination({
+    required this.pageIndex,
+    required this.pageCount,
+    required this.pageSize,
+    required this.pageSizeOptions,
+    required this.onPageChanged,
+    required this.onPageSizeChanged,
+    required this.onCustomPageSize,
+  });
+
+  final int pageIndex;
+  final int pageCount;
+  final int pageSize;
+  final List<int> pageSizeOptions;
+  final ValueChanged<int> onPageChanged;
+  final ValueChanged<int> onPageSizeChanged;
+  final VoidCallback onCustomPageSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final firstPage = pageCount <= 3
+        ? 0
+        : pageIndex <= 1
+        ? 0
+        : pageIndex >= pageCount - 2
+        ? pageCount - 3
+        : pageIndex - 1;
+    final visiblePageCount = math.min(3, pageCount);
+
+    return Wrap(
+      key: const ValueKey('playlist-track-pagination'),
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 12,
+      runSpacing: 4,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('每页'),
+            const SizedBox(width: 6),
+            PopupMenuButton<int>(
+              tooltip: '设置每页数量',
+              onSelected: (value) {
+                if (value == 0) {
+                  onCustomPageSize();
+                } else {
+                  onPageSizeChanged(value);
+                }
+              },
+              itemBuilder: (context) => [
+                for (final value in pageSizeOptions)
+                  PopupMenuItem(value: value, child: Text('$value 首')),
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: 0, child: Text('自定义…')),
+              ],
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('$pageSize 首'),
+                    const Icon(Icons.arrow_drop_down, size: 20),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: '上一页',
+              onPressed: pageIndex <= 0
+                  ? null
+                  : () => onPageChanged(pageIndex - 1),
+              icon: const Icon(Icons.chevron_left),
+            ),
+            for (var offset = 0; offset < visiblePageCount; offset += 1)
+              TextButton(
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(36, 36),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  foregroundColor: firstPage + offset == pageIndex
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                  textStyle: TextStyle(
+                    fontWeight: firstPage + offset == pageIndex
+                        ? FontWeight.w700
+                        : FontWeight.w400,
+                  ),
+                ),
+                onPressed: () => onPageChanged(firstPage + offset),
+                child: Text('${firstPage + offset + 1}'),
+              ),
+            IconButton(
+              tooltip: '下一页',
+              onPressed: pageIndex >= pageCount - 1
+                  ? null
+                  : () => onPageChanged(pageIndex + 1),
+              icon: const Icon(Icons.chevron_right),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 }
 
@@ -3804,6 +4411,7 @@ class _LibraryHome extends StatelessWidget {
     required this.onRefreshLibrary,
     required this.onOpenPlaylistCollection,
     required this.onOpenMetadataManager,
+    required this.onOpenLogViewer,
   });
 
   final AppController controller;
@@ -3831,6 +4439,7 @@ class _LibraryHome extends StatelessWidget {
   final Future<void> Function() onRefreshLibrary;
   final ValueChanged<_PlaylistCollection> onOpenPlaylistCollection;
   final VoidCallback onOpenMetadataManager;
+  final VoidCallback onOpenLogViewer;
 
   @override
   Widget build(BuildContext context) {
@@ -3890,6 +4499,7 @@ class _LibraryHome extends StatelessWidget {
                   onBack: () => onHomeTabChanged(_HomeTab.music),
                   onRefreshLibrary: onRefreshLibrary,
                   onOpenMetadataManager: onOpenMetadataManager,
+                  onOpenLogViewer: onOpenLogViewer,
                   showBack: false,
                 ),
               },
@@ -5123,8 +5733,12 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
       if (!mounted || requestId != _suggestionRequestId) {
         return;
       }
-      debugPrint('Remote search suggestions failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.error(
+        'search',
+        '加载远程搜索联想失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       setState(() {
         _suggestions = const [];
         _suggestionMessage = '联想搜索失败';
@@ -6354,10 +6968,16 @@ int _libraryBrowseColumnCount(double maxWidth, _LibraryPreviewStyle style) {
   return preferredColumns;
 }
 
-class _TrackList extends StatelessWidget {
+bool get _usesDesktopTrackSelection =>
+    defaultTargetPlatform == TargetPlatform.windows ||
+    defaultTargetPlatform == TargetPlatform.macOS;
+
+class _TrackList extends StatefulWidget {
   const _TrackList({
     required this.controller,
     required this.tracks,
+    this.playbackTracks,
+    this.indexOffset = 0,
     this.shrinkWrap = false,
     this.showArtwork = true,
     this.padding,
@@ -6369,6 +6989,8 @@ class _TrackList extends StatelessWidget {
 
   final AppController controller;
   final List<Track> tracks;
+  final List<Track>? playbackTracks;
+  final int indexOffset;
   final bool shrinkWrap;
   final bool showArtwork;
   final EdgeInsetsGeometry? padding;
@@ -6377,6 +6999,37 @@ class _TrackList extends StatelessWidget {
   final void Function(int index, bool selected)? onSelectionChanged;
   final Future<void> Function(int index, Track track)?
   onRemoveFromRemotePlaylist;
+
+  @override
+  State<_TrackList> createState() => _TrackListState();
+}
+
+class _TrackListState extends State<_TrackList> {
+  String? _desktopSelectedTrackId;
+
+  AppController get controller => widget.controller;
+  List<Track> get tracks => widget.tracks;
+  List<Track>? get playbackTracks => widget.playbackTracks;
+  int get indexOffset => widget.indexOffset;
+  bool get shrinkWrap => widget.shrinkWrap;
+  bool get showArtwork => widget.showArtwork;
+  EdgeInsetsGeometry? get padding => widget.padding;
+  bool get allowTrackActions => widget.allowTrackActions;
+  Set<int>? get selectedIndexes => widget.selectedIndexes;
+  void Function(int index, bool selected)? get onSelectionChanged =>
+      widget.onSelectionChanged;
+  Future<void> Function(int index, Track track)?
+  get onRemoveFromRemotePlaylist => widget.onRemoveFromRemotePlaylist;
+
+  @override
+  void didUpdateWidget(covariant _TrackList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final selectedTrackId = _desktopSelectedTrackId;
+    if (selectedTrackId != null &&
+        !widget.tracks.any((track) => track.id == selectedTrackId)) {
+      _desktopSelectedTrackId = null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -6410,6 +7063,7 @@ class _TrackList extends StatelessWidget {
       physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
       itemBuilder: (context, index) {
         final track = tracks[index];
+        final sourceIndex = index + indexOffset;
         final isCurrent = controller.player.currentTrack?.id == track.id;
         final isManagedLocalTrack =
             track.sourceType == MusicSourceType.localFile &&
@@ -6434,7 +7088,11 @@ class _TrackList extends StatelessWidget {
         final actionSize = compact ? 30.0 : 40.0;
         final colorScheme = Theme.of(context).colorScheme;
         final selectionMode = onSelectionChanged != null;
-        final isSelected = selectedIndexes?.contains(index) ?? false;
+        final isSelected = selectedIndexes?.contains(sourceIndex) ?? false;
+        final isDesktopSelected =
+            !selectionMode &&
+            _usesDesktopTrackSelection &&
+            _desktopSelectedTrackId == track.id;
 
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -6444,7 +7102,7 @@ class _TrackList extends StatelessWidget {
                   context,
                   details.globalPosition,
                   track,
-                  index,
+                  sourceIndex,
                   canRemove,
                   allowTrackActions,
                 ),
@@ -6454,12 +7112,12 @@ class _TrackList extends StatelessWidget {
                   context,
                   details.globalPosition,
                   track,
-                  index,
+                  sourceIndex,
                   canRemove,
                   allowTrackActions,
                 ),
           child: Material(
-            color: isSelected
+            color: isSelected || isDesktopSelected
                 ? colorScheme.primaryContainer.withValues(alpha: 0.18)
                 : isCurrent
                 ? colorScheme.primaryContainer.withValues(alpha: 0.12)
@@ -6469,8 +7127,11 @@ class _TrackList extends StatelessWidget {
               key: ValueKey('track-row-${track.id}'),
               borderRadius: BorderRadius.circular(8),
               onTap: selectionMode
-                  ? () => onSelectionChanged?.call(index, !isSelected)
-                  : () => controller.playTrackList(tracks, index),
+                  ? () => onSelectionChanged?.call(sourceIndex, !isSelected)
+                  : () => _handleTrackTap(track, sourceIndex),
+              onDoubleTap: selectionMode || !_usesDesktopTrackSelection
+                  ? null
+                  : () => _playDesktopTrack(track, sourceIndex),
               child: SizedBox(
                 height: rowHeight,
                 child: Padding(
@@ -6590,6 +7251,25 @@ class _TrackList extends StatelessWidget {
     );
   }
 
+  void _handleTrackTap(Track track, int index) {
+    if (!_usesDesktopTrackSelection) {
+      unawaited(controller.playTrackList(playbackTracks ?? tracks, index));
+      return;
+    }
+    if (_desktopSelectedTrackId == track.id) {
+      unawaited(controller.playTrackList(playbackTracks ?? tracks, index));
+      return;
+    }
+    setState(() => _desktopSelectedTrackId = track.id);
+  }
+
+  void _playDesktopTrack(Track track, int index) {
+    if (_desktopSelectedTrackId != track.id) {
+      setState(() => _desktopSelectedTrackId = track.id);
+    }
+    unawaited(controller.playTrackList(playbackTracks ?? tracks, index));
+  }
+
   Future<void> _showTrackMenu(
     BuildContext context,
     Offset position,
@@ -6613,8 +7293,7 @@ class _TrackList extends StatelessWidget {
             title: Text('下一首播放'),
           ),
         ),
-        if (allowManagementActions &&
-            controller.canAddTrackToRemotePlaylist(track))
+        if (controller.canAddTrackToRemotePlaylist(track))
           const PopupMenuItem(
             value: 'add_to_playlist',
             child: ListTile(
@@ -7398,6 +8077,7 @@ class _RecordArtwork extends StatelessWidget {
 }
 
 const double _lyricLineExtent = 54;
+const Duration _lyricPreviewTimeout = Duration(seconds: 3);
 
 class _LyricsPanel extends StatefulWidget {
   const _LyricsPanel({required this.controller, required this.track});
@@ -7417,6 +8097,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   int? _lastScrolledIndex;
   int? _previewIndex;
   bool _isUserScrolling = false;
+  Timer? _previewResetTimer;
 
   @override
   void initState() {
@@ -7440,6 +8121,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
 
   @override
   void dispose() {
+    _previewResetTimer?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -7498,7 +8180,9 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                                     key: ValueKey('timed-lyric-$index'),
                                     text: _timeline[index].text,
                                     selected: index == selectedIndex,
+                                    showSeekButton: index == _previewIndex,
                                     onTap: () => _selectLyric(index),
+                                    onSeek: () => _confirmLyricSeek(index),
                                   );
                                 },
                               ),
@@ -7515,6 +8199,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   }
 
   void _syncLyrics() {
+    _previewResetTimer?.cancel();
     _lyrics = widget.track.lyrics.trim();
     _timeline = parseLyricsTimeline(_lyrics);
     _plainLines = _lyrics.isEmpty
@@ -7553,7 +8238,6 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   bool _handleLyricScroll(ScrollNotification notification) {
     if (notification is ScrollStartNotification &&
         notification.dragDetails != null) {
-      _isUserScrolling = true;
       _setPreviewIndex(_centeredLyricIndex(notification.metrics));
       return false;
     }
@@ -7564,12 +8248,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         notification is OverscrollNotification) {
       _setPreviewIndex(_centeredLyricIndex(notification.metrics));
     } else if (notification is ScrollEndNotification) {
-      final index = _previewIndex;
-      if (index == null) {
-        _isUserScrolling = false;
-      } else {
-        unawaited(_seekToLyric(index));
-      }
+      _schedulePreviewReset();
     }
     return false;
   }
@@ -7577,6 +8256,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   void _handleLyricPointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent && !_isUserScrolling) {
       setState(() => _isUserScrolling = true);
+      _schedulePreviewReset();
     }
   }
 
@@ -7588,19 +8268,38 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   }
 
   void _setPreviewIndex(int index) {
-    if (_previewIndex == index) {
-      return;
-    }
-    setState(() => _previewIndex = index);
-  }
-
-  void _selectLyric(int index) {
     if (!_isUserScrolling || _previewIndex != index) {
       setState(() {
         _isUserScrolling = true;
         _previewIndex = index;
       });
     }
+    _schedulePreviewReset();
+  }
+
+  void _selectLyric(int index) {
+    _setPreviewIndex(index);
+  }
+
+  void _schedulePreviewReset() {
+    _previewResetTimer?.cancel();
+    if (!_isUserScrolling || _previewIndex == null) {
+      return;
+    }
+    _previewResetTimer = Timer(_lyricPreviewTimeout, () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isUserScrolling = false;
+        _previewIndex = null;
+        _lastScrolledIndex = null;
+      });
+    });
+  }
+
+  void _confirmLyricSeek(int index) {
+    _previewResetTimer?.cancel();
     unawaited(_seekToLyric(index));
   }
 
@@ -7663,40 +8362,68 @@ class _TimedLyricLine extends StatelessWidget {
     super.key,
     required this.text,
     required this.selected,
+    required this.showSeekButton,
     required this.onTap,
+    required this.onSeek,
   });
 
   final String text;
   final bool selected;
+  final bool showSeekButton;
   final VoidCallback onTap;
+  final VoidCallback onSeek;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: AnimatedDefaultTextStyle(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          style:
-              Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: selected
-                    ? colorScheme.primary
-                    : colorScheme.onSurfaceVariant.withValues(alpha: 0.62),
-                fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-                fontSize: selected ? 20 : 17,
-              ) ??
-              TextStyle(
-                color: selected
-                    ? colorScheme.primary
-                    : colorScheme.onSurfaceVariant,
-                fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+    return Row(
+      children: [
+        Expanded(
+          child: InkWell(
+            onTap: onTap,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                style:
+                    Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: selected
+                          ? colorScheme.primary
+                          : colorScheme.onSurfaceVariant.withValues(
+                              alpha: 0.62,
+                            ),
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+                      fontSize: selected ? 20 : 17,
+                    ) ??
+                    TextStyle(
+                      color: selected
+                          ? colorScheme.primary
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+                    ),
+                child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
               ),
-          child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+            ),
+          ),
         ),
-      ),
+        SizedBox(
+          width: 40,
+          height: 40,
+          child: showSeekButton
+              ? IconButton(
+                  key: const ValueKey('lyric-seek-button'),
+                  tooltip: '从这句播放',
+                  onPressed: onSeek,
+                  icon: const Icon(Icons.play_arrow_rounded),
+                  color: colorScheme.primary,
+                  iconSize: 24,
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                )
+              : null,
+        ),
+      ],
     );
   }
 }

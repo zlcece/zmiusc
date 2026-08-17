@@ -8,12 +8,22 @@ class StreamingAudioCacheProxy {
     required this.cacheFile,
     this.headers,
     this.progressUpdateInterval = const Duration(milliseconds: 100),
-  });
+    this.originResponseTimeout = const Duration(seconds: 30),
+    this.originReadTimeout = const Duration(seconds: 20),
+    this.originRequestAttempts = 2,
+  }) {
+    // A proxy can be canceled before the player sends its first request.
+    // Keep cancellation from surfacing as an unhandled asynchronous error.
+    _metadataCompleter.future.ignore();
+  }
 
   final Uri uri;
   final File cacheFile;
   final Map<String, String>? headers;
   final Duration progressUpdateInterval;
+  final Duration originResponseTimeout;
+  final Duration originReadTimeout;
+  final int originRequestAttempts;
 
   final StreamController<double> _downloadProgressController =
       StreamController<double>.broadcast();
@@ -37,6 +47,12 @@ class StreamingAudioCacheProxy {
 
   Stream<double> get downloadProgressStream =>
       _downloadProgressController.stream;
+
+  bool get isDownloading =>
+      _downloadFuture != null &&
+      !_downloadComplete &&
+      _downloadError == null &&
+      !_canceled;
 
   Future<Uri> start() async {
     if (_server != null) {
@@ -148,58 +164,110 @@ class StreamingAudioCacheProxy {
   }
 
   Future<void> _downloadToCache() async {
-    final client = _newHttpClient();
-    try {
-      final request = await client.getUrl(uri);
-      _applyHeaders(request);
-      final response = await request.close();
-      if (response.statusCode != HttpStatus.ok &&
-          response.statusCode != HttpStatus.partialContent) {
-        throw HttpException('HTTP ${response.statusCode}', uri: uri);
-      }
-
-      _contentType = response.headers.contentType?.toString() ?? _contentType;
-      if (_looksLikeStructuredErrorResponse(_contentType)) {
-        throw HttpException(
-          'Audio stream returned $_contentType instead of audio.',
-          uri: uri,
-        );
-      }
-      _sourceLength = _responseSourceLength(response);
-      await File('${cacheFile.path}.mime').writeAsString(_contentType);
-      _cacheWriter = await cacheFile.open(mode: FileMode.write);
-      _completeMetadata();
-
-      await for (final chunk in response) {
-        if (_canceled) {
-          break;
+    final attempts = math.max(1, originRequestAttempts);
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      final client = _newHttpClient();
+      try {
+        final request = await client.getUrl(uri);
+        _applyHeaders(request);
+        final resumeOffset = _downloadedBytes;
+        if (resumeOffset > 0) {
+          request.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
         }
-        await _cacheWriter?.writeFrom(chunk);
-        _downloadedBytes += chunk.length;
-        _emitProgress();
-        _wakeDataWaiters();
-      }
+        final response = await request.close().timeout(originResponseTimeout);
+        if (response.statusCode != HttpStatus.ok &&
+            response.statusCode != HttpStatus.partialContent) {
+          throw HttpException('HTTP ${response.statusCode}', uri: uri);
+        }
 
-      await _closeCacheWriter();
-      if (!_canceled) {
-        _downloadComplete = true;
+        final isResuming =
+            resumeOffset > 0 &&
+            response.statusCode == HttpStatus.partialContent;
+        if (!isResuming && resumeOffset > 0) {
+          _downloadedBytes = 0;
+        }
+
+        _contentType = response.headers.contentType?.toString() ?? _contentType;
+        if (_looksLikeStructuredErrorResponse(_contentType)) {
+          throw HttpException(
+            'Audio stream returned $_contentType instead of audio.',
+            uri: uri,
+          );
+        }
+        _sourceLength = _responseSourceLength(response) ?? _sourceLength;
+        await File('${cacheFile.path}.mime').writeAsString(_contentType);
+        _cacheWriter = await cacheFile.open(
+          mode: isResuming ? FileMode.append : FileMode.write,
+        );
+        _completeMetadata();
+
+        await for (final chunk in response.timeout(originReadTimeout)) {
+          if (_canceled) {
+            break;
+          }
+          await _cacheWriter?.writeFrom(chunk);
+          _downloadedBytes += chunk.length;
+          _emitProgress();
+          _wakeDataWaiters();
+        }
+
+        await _closeCacheWriter();
+        if (!_canceled &&
+            _sourceLength != null &&
+            _downloadedBytes < _sourceLength!) {
+          throw HttpException(
+            'Audio stream ended at $_downloadedBytes of $_sourceLength bytes.',
+            uri: uri,
+          );
+        }
+        if (!_canceled) {
+          _downloadComplete = true;
+        }
+        if (!_canceled &&
+            (_sourceLength == null || _downloadedBytes >= _sourceLength!)) {
+          _emitProgress(value: 1, force: true);
+        }
+        _wakeDataWaiters();
+        return;
+      } catch (error) {
+        await _closeCacheWriter();
+        if (_canceled) {
+          return;
+        }
+        if (attempt < attempts && _isRetryableOriginError(error)) {
+          continue;
+        }
+        _downloadError = error;
+        if (!_metadataCompleter.isCompleted) {
+          _metadataCompleter.completeError(error);
+        }
+        _wakeDataWaiters();
+        return;
+      } finally {
+        client.close(force: true);
+        _clients.remove(client);
+        await _closeCacheWriter();
       }
-      if (!_canceled &&
-          (_sourceLength == null || _downloadedBytes >= _sourceLength!)) {
-        _emitProgress(value: 1, force: true);
-      }
-      _wakeDataWaiters();
-    } catch (error) {
-      _downloadError = error;
-      if (!_metadataCompleter.isCompleted) {
-        _metadataCompleter.completeError(error);
-      }
-      _wakeDataWaiters();
-    } finally {
-      client.close(force: true);
-      _clients.remove(client);
-      await _closeCacheWriter();
     }
+  }
+
+  bool _isRetryableOriginError(Object error) {
+    if (error is TimeoutException || error is SocketException) {
+      return true;
+    }
+    if (error is! HttpException) {
+      return false;
+    }
+    final message = error.message;
+    if (message.startsWith('Audio stream ended at ')) {
+      return true;
+    }
+    if (message.startsWith('Connection closed')) {
+      return true;
+    }
+    final match = RegExp(r'^HTTP (\d+)$').firstMatch(message);
+    final statusCode = int.tryParse(match?.group(1) ?? '');
+    return statusCode != null && statusCode >= 500;
   }
 
   void _completeMetadata() {
@@ -309,7 +377,9 @@ class StreamingAudioCacheProxy {
       final request = await client.getUrl(uri);
       _applyHeaders(request);
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$last');
-      final remoteResponse = await request.close();
+      final remoteResponse = await request.close().timeout(
+        originResponseTimeout,
+      );
       if (remoteResponse.statusCode != HttpStatus.partialContent) {
         await remoteResponse.drain<void>();
         return false;
@@ -322,7 +392,7 @@ class StreamingAudioCacheProxy {
           uri: uri,
         );
       }
-      await response.addStream(remoteResponse);
+      await response.addStream(remoteResponse.timeout(originReadTimeout));
       await response.flush();
       return true;
     } finally {
@@ -368,7 +438,9 @@ class StreamingAudioCacheProxy {
   }
 
   HttpClient _newHttpClient() {
-    final client = HttpClient();
+    final client = HttpClient()
+      ..connectionTimeout = originResponseTimeout
+      ..idleTimeout = originReadTimeout;
     _clients.add(client);
     return client;
   }

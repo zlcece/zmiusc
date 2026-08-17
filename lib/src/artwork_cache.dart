@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -20,6 +21,11 @@ class ArtworkCacheManager {
   final Future<Directory> Function()? cacheDirectoryProvider;
   final Map<String, Future<File?>> _inFlight = {};
   final Set<String> _missingLocalArtwork = {};
+  final Queue<Completer<void>> _pendingRemoteDownloads = Queue();
+  int _activeRemoteDownloads = 0;
+
+  static const int _maxConcurrentRemoteDownloads = 4;
+  static const Duration _remoteDownloadTimeout = Duration(seconds: 20);
 
   Future<File?> cacheArtwork(String? imageUrl) {
     final value = imageUrl?.trim() ?? '';
@@ -173,7 +179,13 @@ class ArtworkCacheManager {
       return file;
     }
 
-    final response = await _httpClient.get(uri);
+    await _acquireRemoteDownloadSlot();
+    late final http.Response response;
+    try {
+      response = await _httpClient.get(uri).timeout(_remoteDownloadTimeout);
+    } finally {
+      _releaseRemoteDownloadSlot();
+    }
     if (response.statusCode < 200 ||
         response.statusCode >= 300 ||
         response.bodyBytes.isEmpty) {
@@ -192,6 +204,24 @@ class ArtworkCacheManager {
       await temporary.delete();
       return file;
     }
+  }
+
+  Future<void> _acquireRemoteDownloadSlot() async {
+    if (_activeRemoteDownloads < _maxConcurrentRemoteDownloads) {
+      _activeRemoteDownloads++;
+      return;
+    }
+    final completer = Completer<void>();
+    _pendingRemoteDownloads.addLast(completer);
+    await completer.future;
+  }
+
+  void _releaseRemoteDownloadSlot() {
+    if (_pendingRemoteDownloads.isNotEmpty) {
+      _pendingRemoteDownloads.removeFirst().complete();
+      return;
+    }
+    _activeRemoteDownloads--;
   }
 
   Future<void> clearCache() async {

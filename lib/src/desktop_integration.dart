@@ -7,6 +7,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app_controller.dart';
+import 'app_logger.dart';
 import 'settings_models.dart';
 
 const MethodChannel _windowsSettingsChannel = MethodChannel(
@@ -64,6 +65,10 @@ class DesktopIntegration with WindowListener, TrayListener {
   @override
   Future<void> onWindowClose() async {
     if (_isExiting) {
+      return;
+    }
+    if (Platform.isMacOS) {
+      await windowManager.minimize();
       return;
     }
     if (controller.settings.closeButtonBehavior ==
@@ -174,8 +179,12 @@ class DesktopIntegration with WindowListener, TrayListener {
       );
       _lastLaunchAtStartup = enabled;
     } catch (error, stackTrace) {
-      debugPrint('Failed to update Windows startup entry: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.error(
+        'desktop',
+        '更新 Windows 开机启动设置失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 

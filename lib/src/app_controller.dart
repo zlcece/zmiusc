@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'audio_cache.dart';
 import 'artwork_cache.dart';
 import 'app_update.dart';
+import 'app_logger.dart';
 import 'library_store.dart';
 import 'local_library.dart';
 import 'models.dart';
@@ -23,6 +25,7 @@ import 'subsonic_api.dart';
 const String defaultMusicServerUrl = 'https://fnnav.zuitimes.com';
 const int searchSongPageSize = 60;
 const Duration playlistTrackCacheDuration = Duration(minutes: 5);
+const Duration playlistTrackLoadTimeout = Duration(seconds: 45);
 
 List<Track> _sortAlbumTracks(List<Track> tracks) {
   if (!tracks.any((track) => track.trackNumber != null)) {
@@ -95,6 +98,7 @@ class AppController extends ChangeNotifier {
   bool isBusy = false;
   bool isRefreshingLibrary = false;
   bool isLoadingRecommendations = false;
+  bool _logsUnlocked = false;
   final Set<String> _favoriteTrackToggleKeys = <String>{};
   final Map<String, ({DateTime loadedAt, List<Track> tracks})>
   _playlistTrackCache = {};
@@ -122,6 +126,19 @@ class AppController extends ChangeNotifier {
   }
 
   String get selectedUsername => selectedServer?.username.trim() ?? '';
+
+  bool get logsUnlocked => _logsUnlocked;
+
+  bool unlockLogsForSession(String password) {
+    if (password != 'rizhi') {
+      return false;
+    }
+    if (!_logsUnlocked) {
+      _logsUnlocked = true;
+      notifyListeners();
+    }
+    return true;
+  }
 
   bool get isAuthenticated {
     final server = selectedServer;
@@ -184,6 +201,7 @@ class AppController extends ChangeNotifier {
     final restoredServers = await store.loadServers();
     customTracks = await store.loadCustomTracks();
     settings = (await store.loadSettings()).normalized;
+    AppLogger.instance.setLevel(settings.logLevel);
     if (settings.cacheDirectory.isEmpty) {
       settings = settings.copyWith(
         cacheDirectory: await cacheManager.defaultCacheDirectory(),
@@ -263,6 +281,7 @@ class AppController extends ChangeNotifier {
       }
     }
     isInitialized = true;
+    AppLogger.instance.info('app', '应用状态加载完成');
 
     notifyListeners();
     if (loadLibrary && selectedServer != null) {
@@ -324,9 +343,16 @@ class AppController extends ChangeNotifier {
       libraryOverview = const LibraryOverview();
       localTracks = [];
       statusMessage = '登录成功。';
-    } catch (error) {
+      AppLogger.instance.info('account', '远程账号登录成功');
+    } catch (error, stackTrace) {
       statusMessage =
           '登录失败：${error.toString().replaceFirst('Exception: ', '')}';
+      AppLogger.instance.error(
+        'account',
+        '远程账号登录失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       rethrow;
     } finally {
       isBusy = false;
@@ -336,6 +362,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    AppLogger.instance.info('account', '退出当前账号');
     await _clearPlaybackSession();
     await _clearDailyRecommendation();
     _clearPlaylistTrackCache();
@@ -362,6 +389,7 @@ class AppController extends ChangeNotifier {
   Future<void> updateSettings(AppSettings value) async {
     final previousSettings = settings;
     settings = value.normalized;
+    AppLogger.instance.setLevel(settings.logLevel);
     final shouldReloadHomeOverview = _shouldReloadHomeOverviewForSettings(
       previousSettings,
       settings,
@@ -543,6 +571,7 @@ class AppController extends ChangeNotifier {
     }
 
     _clearPlaylistTrackCache();
+    AppLogger.instance.info('library', '开始重新加载曲库');
     isRefreshingLibrary = true;
     isBusy = true;
     statusMessage = null;
@@ -557,6 +586,7 @@ class AppController extends ChangeNotifier {
       libraryOverview = const LibraryOverview();
       notifyListeners();
       await _loadRemoteLibraryOverviewIncrementally(server);
+      AppLogger.instance.info('library', '曲库加载完成');
     } finally {
       isBusy = false;
       isRefreshingLibrary = false;
@@ -581,8 +611,14 @@ class AppController extends ChangeNotifier {
         }
         apply(value);
         notifyListeners();
-      } catch (error) {
+      } catch (error, stackTrace) {
         errors.add(error);
+        AppLogger.instance.error(
+          'library',
+          '加载曲库分项数据失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
       }
     }
 
@@ -1015,8 +1051,12 @@ class AppController extends ChangeNotifier {
             : '已换一批：${tracks.length} 首。';
       }
     } catch (error, stackTrace) {
-      debugPrint('Daily recommendation failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.error(
+        'recommendation',
+        '生成每日推荐失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       if (showStatus && requestId == _recommendationRequestId) {
         statusMessage = '生成每日推荐失败，请稍后重试。';
       }
@@ -1032,8 +1072,12 @@ class AppController extends ChangeNotifier {
     try {
       return await future;
     } catch (error, stackTrace) {
-      debugPrint('Recommendation source failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.warning(
+        'recommendation',
+        '加载推荐数据源失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       return <T>[];
     }
   }
@@ -1058,8 +1102,12 @@ class AppController extends ChangeNotifier {
           )
           .toList();
     } catch (error, stackTrace) {
-      debugPrint('Recommendation artist search failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.warning(
+        'recommendation',
+        '搜索收藏歌手相关歌曲失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       return [];
     }
   }
@@ -1102,6 +1150,10 @@ class AppController extends ChangeNotifier {
     late final Future<List<Track>> request;
     request = apiClientFactory(server)
         .playlistTracks(item.id)
+        .timeout(
+          playlistTrackLoadTimeout,
+          onTimeout: () => throw Exception('歌单加载超时，请返回后重试。'),
+        )
         .then((tracks) {
           final cachedTracks = List<Track>.unmodifiable(tracks);
           if (identical(_playlistTrackLoads[key], request)) {
@@ -1397,6 +1449,13 @@ class AppController extends ChangeNotifier {
       );
       statusMessage =
           '歌单同步完成，新增 ${idsToAdd.length} 首，未匹配 ${match.missingTracks.length} 首。';
+      onProgress?.call(
+        PlaylistSyncProgress(
+          completed: external.tracks.length,
+          total: external.tracks.length,
+          message: '同步完成',
+        ),
+      );
       return result;
     } catch (error) {
       statusMessage = error.toString().replaceFirst('Exception: ', '');
@@ -1669,8 +1728,12 @@ class AppController extends ChangeNotifier {
       }
       return tracks;
     } catch (error, stackTrace) {
-      debugPrint('Failed to load random queue after completion: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.error(
+        'player',
+        '队列结束后加载随机歌曲失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       return const [];
     }
   }
@@ -1792,19 +1855,34 @@ class AppController extends ChangeNotifier {
     );
   }
 
-  Future<LocalAudioMetadata> saveAudioMetadata(LocalAudioMetadata value) async {
-    return saveLocalAudioMetadata(value);
+  Future<LocalAudioMetadata> saveAudioMetadata(
+    LocalAudioMetadata value, {
+    Uint8List? artworkBytes,
+    String? artworkMimeType,
+  }) async {
+    return saveLocalAudioMetadata(
+      value,
+      artworkBytes: artworkBytes,
+      artworkMimeType: artworkMimeType,
+    );
   }
 
   Future<LocalAudioMetadata> saveLocalAudioMetadata(
-    LocalAudioMetadata value,
-  ) async {
+    LocalAudioMetadata value, {
+    Uint8List? artworkBytes,
+    String? artworkMimeType,
+  }) async {
     if (!canWriteAudioMetadataPath(value.path)) {
       throw Exception('当前格式只支持读取，不能写入元数据。');
     }
 
     final file = File(value.path);
-    _updateMetadata(file, value);
+    _updateMetadata(
+      file,
+      value,
+      artworkBytes: artworkBytes,
+      artworkMimeType: artworkMimeType,
+    );
 
     final updated = await readLocalAudioMetadata(value.path);
     _replaceLocalTrack(updated);
@@ -1924,9 +2002,15 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       await operation();
-    } catch (error) {
+    } catch (error, stackTrace) {
       statusMessage =
           '播放失败：${error.toString().replaceFirst('Exception: ', '')}';
+      AppLogger.instance.error(
+        'player',
+        '播放操作失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
       notifyListeners();
     }
   }
@@ -1990,7 +2074,12 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  void _updateMetadata(File file, LocalAudioMetadata value) {
+  void _updateMetadata(
+    File file,
+    LocalAudioMetadata value, {
+    Uint8List? artworkBytes,
+    String? artworkMimeType,
+  }) {
     updateMetadata(file, (metadata) {
       metadata
         ..setTitle(_emptyToNull(value.title))
@@ -2000,6 +2089,15 @@ class AppController extends ChangeNotifier {
         ..setTrackNumber(_intFromString(value.trackNumber))
         ..setGenres(_genresFromString(value.genres))
         ..setLyrics(_emptyToNull(value.lyrics));
+      if (artworkBytes != null && artworkBytes.isNotEmpty) {
+        metadata.setPictures([
+          Picture(
+            artworkBytes,
+            artworkMimeType ?? 'image/jpeg',
+            PictureType.coverFront,
+          ),
+        ]);
+      }
     });
   }
 
@@ -2019,7 +2117,6 @@ class AppController extends ChangeNotifier {
       _lastLyricTrackId = track.id;
       unawaited(loadLyricsForCurrentTrack(track));
     }
-    _maybeScrobbleNowPlaying(track);
   }
 
   void _handlePlaybackSessionChanged() {
@@ -2034,8 +2131,12 @@ class AppController extends ChangeNotifier {
     _playbackSessionWrite = _playbackSessionWrite
         .then((_) => store.savePlaybackSession(session))
         .catchError((Object error, StackTrace stackTrace) {
-          debugPrint('Failed to save playback session: $error');
-          debugPrint('$stackTrace');
+          AppLogger.instance.error(
+            'player',
+            '保存播放队列会话失败',
+            error: error,
+            stackTrace: stackTrace,
+          );
         });
   }
 
@@ -2063,6 +2164,10 @@ class AppController extends ChangeNotifier {
     if (track == null) {
       return;
     }
+    if (position <= Duration.zero) {
+      return;
+    }
+    _maybeScrobbleNowPlaying(track);
     final sessionKey = _syncPlaybackScrobbleSession(track);
     if (sessionKey == null || _submittedScrobbleSessionKey == sessionKey) {
       return;
@@ -2154,8 +2259,12 @@ class AppController extends ChangeNotifier {
         time: DateTime.now(),
       );
     } catch (error, stackTrace) {
-      debugPrint('Playback scrobble failed: $error');
-      debugPrint('$stackTrace');
+      AppLogger.instance.warning(
+        'player',
+        '提交播放记录失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 

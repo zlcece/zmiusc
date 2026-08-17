@@ -31,26 +31,27 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
   final TextEditingController _yearController = TextEditingController();
   final TextEditingController _trackNumberController = TextEditingController();
   final TextEditingController _lyricsController = TextEditingController();
-  late final MusicBrainzMetadataService _musicBrainzService;
+  late final OnlineMetadataService _onlineMetadataService;
 
   List<String> _audioFiles = const [];
   LocalAudioMetadata? _metadata;
-  List<MusicBrainzMetadataCandidate> _musicBrainzResults = const [];
-  MusicBrainzMetadataCandidate? _selectedMusicBrainzResult;
-  Set<MusicBrainzMetadataField> _selectedMusicBrainzFields = const {};
+  OnlineMetadataSource _metadataSource = OnlineMetadataSource.musicBrainz;
+  List<OnlineMetadataCandidate> _onlineMetadataResults = const [];
+  OnlineMetadataCandidate? _selectedOnlineMetadataResult;
+  Set<OnlineMetadataField> _selectedOnlineMetadataFields = const {};
   bool _isScanning = false;
   bool _isReading = false;
   bool _isSaving = false;
-  bool _isSearchingMusicBrainz = false;
+  bool _isSearchingOnlineMetadata = false;
   String? _message;
   bool _messageIsError = false;
   int _selectionRequest = 0;
-  int _musicBrainzRequest = 0;
+  int _onlineMetadataRequest = 0;
 
   @override
   void initState() {
     super.initState();
-    _musicBrainzService = MusicBrainzMetadataService();
+    _onlineMetadataService = OnlineMetadataService();
   }
 
   @override
@@ -63,7 +64,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     _yearController.dispose();
     _trackNumberController.dispose();
     _lyricsController.dispose();
-    _musicBrainzService.dispose();
+    _onlineMetadataService.dispose();
     super.dispose();
   }
 
@@ -293,7 +294,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                 const SizedBox(height: 14),
                 const Divider(height: 1),
                 const SizedBox(height: 14),
-                _buildMusicBrainzSection(context, metadata),
+                _buildOnlineMetadataSection(context, metadata),
               ],
             ),
     );
@@ -309,6 +310,8 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
       children: [
         Row(
           children: [
+            _buildArtwork(metadata.coverUrl, size: 76),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -400,11 +403,11 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     );
   }
 
-  Widget _buildMusicBrainzSection(
+  Widget _buildOnlineMetadataSection(
     BuildContext context,
     LocalAudioMetadata metadata,
   ) {
-    final selected = _selectedMusicBrainzResult;
+    final selected = _selectedOnlineMetadataResult;
     final writable = canWriteAudioMetadataPath(metadata.path);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -412,43 +415,68 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
         Row(
           children: [
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  Text(
-                    'MusicBrainz',
-                    style: Theme.of(context).textTheme.titleMedium,
+                  Text('在线元数据', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(width: 12),
+                  DropdownButton<OnlineMetadataSource>(
+                    key: const ValueKey('metadata-online-source'),
+                    value: _metadataSource,
+                    underline: const SizedBox.shrink(),
+                    onChanged: _isSearchingOnlineMetadata || _isSaving
+                        ? null
+                        : (source) {
+                            if (source == null || source == _metadataSource) {
+                              return;
+                            }
+                            setState(() {
+                              _metadataSource = source;
+                              _clearOnlineMetadataResults();
+                            });
+                          },
+                    items: OnlineMetadataSource.values
+                        .map(
+                          (source) => DropdownMenuItem(
+                            value: source,
+                            child: Text(source.label),
+                          ),
+                        )
+                        .toList(growable: false),
                   ),
-                  const Text('按当前标题、歌手和专辑搜索，不提供歌词。'),
                 ],
               ),
             ),
             TextButton.icon(
-              key: const ValueKey('metadata-musicbrainz-search'),
-              onPressed: _isSearchingMusicBrainz || _isSaving
+              key: const ValueKey('metadata-online-search'),
+              onPressed: _isSearchingOnlineMetadata || _isSaving
                   ? null
-                  : _searchMusicBrainz,
-              icon: _isSearchingMusicBrainz
+                  : _searchOnlineMetadata,
+              icon: _isSearchingOnlineMetadata
                   ? const SizedBox.square(
                       dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.travel_explore_outlined),
-              label: Text(_isSearchingMusicBrainz ? '搜索中' : '搜索'),
+              label: Text(_isSearchingOnlineMetadata ? '搜索中' : '搜索'),
             ),
           ],
         ),
-        if (_musicBrainzResults.isEmpty && !_isSearchingMusicBrainz) ...[
+        const SizedBox(height: 4),
+        Text(
+          '按当前标题、歌手和专辑搜索；各平台可提供的字段可能不同。',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        if (_onlineMetadataResults.isEmpty && !_isSearchingOnlineMetadata) ...[
           const SizedBox(height: 12),
           Text(
             '搜索结果会显示在这里。',
             style: TextStyle(color: Theme.of(context).colorScheme.outline),
           ),
         ],
-        if (_musicBrainzResults.isNotEmpty) ...[
+        if (_onlineMetadataResults.isNotEmpty) ...[
           const SizedBox(height: 10),
-          ..._musicBrainzResults.map(
-            (candidate) => _buildMusicBrainzResult(context, candidate),
+          ..._onlineMetadataResults.map(
+            (candidate) => _buildOnlineMetadataResult(context, candidate),
           ),
         ],
         if (selected != null) ...[
@@ -458,7 +486,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
           Wrap(
             spacing: 12,
             runSpacing: 2,
-            children: _availableMusicBrainzFields(selected)
+            children: _availableOnlineMetadataFields(selected)
                 .map(
                   (field) => SizedBox(
                     width: 140,
@@ -466,20 +494,20 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                       controlAffinity: ListTileControlAffinity.leading,
-                      title: Text(_musicBrainzFieldLabel(field)),
-                      value: _selectedMusicBrainzFields.contains(field),
+                      title: Text(_onlineMetadataFieldLabel(field)),
+                      value: _selectedOnlineMetadataFields.contains(field),
                       onChanged: writable && !_isSaving
                           ? (value) {
                               setState(() {
-                                final fields = Set<MusicBrainzMetadataField>.of(
-                                  _selectedMusicBrainzFields,
+                                final fields = Set<OnlineMetadataField>.of(
+                                  _selectedOnlineMetadataFields,
                                 );
                                 if (value ?? false) {
                                   fields.add(field);
                                 } else {
                                   fields.remove(field);
                                 }
-                                _selectedMusicBrainzFields = fields;
+                                _selectedOnlineMetadataFields = fields;
                               });
                             }
                           : null,
@@ -493,9 +521,9 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
             children: [
               TextButton(
                 onPressed: writable && !_isSaving
-                    ? () => _applyMusicBrainzFields(
-                        Set<MusicBrainzMetadataField>.of(
-                          _availableMusicBrainzFields(selected),
+                    ? () => _applyOnlineMetadataFields(
+                        Set<OnlineMetadataField>.of(
+                          _availableOnlineMetadataFields(selected),
                         ),
                       )
                     : null,
@@ -506,11 +534,22 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                 onPressed:
                     writable &&
                         !_isSaving &&
-                        _selectedMusicBrainzFields.isNotEmpty
-                    ? () => _applyMusicBrainzFields(_selectedMusicBrainzFields)
+                        _selectedOnlineMetadataFields.isNotEmpty
+                    ? () => _applyOnlineMetadataFields(
+                        _selectedOnlineMetadataFields,
+                      )
                     : null,
                 icon: const Icon(Icons.playlist_add_check_outlined),
                 label: const Text('填入选中字段'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                key: const ValueKey('metadata-online-replace'),
+                onPressed: writable && !_isSaving
+                    ? _confirmAndReplaceOnlineMetadata
+                    : null,
+                icon: const Icon(Icons.find_replace_outlined),
+                label: const Text('一键替换'),
               ),
             ],
           ),
@@ -519,18 +558,20 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     );
   }
 
-  Widget _buildMusicBrainzResult(
+  Widget _buildOnlineMetadataResult(
     BuildContext context,
-    MusicBrainzMetadataCandidate candidate,
+    OnlineMetadataCandidate candidate,
   ) {
-    final selected = _selectedMusicBrainzResult?.id == candidate.id;
+    final selected =
+        _selectedOnlineMetadataResult?.source == candidate.source &&
+        _selectedOnlineMetadataResult?.id == candidate.id;
     final details = [
       if (candidate.artist.isNotEmpty) candidate.artist,
       if (candidate.album.isNotEmpty) candidate.album,
       if (candidate.year.isNotEmpty) candidate.year,
     ].join(' · ');
     return InkWell(
-      onTap: () => _selectMusicBrainzResult(candidate),
+      onTap: () => _selectOnlineMetadataResult(candidate),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Row(
@@ -541,6 +582,8 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                   : Icons.radio_button_unchecked,
               size: 20,
             ),
+            const SizedBox(width: 10),
+            _buildArtwork(candidate.artworkUrl, size: 48),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -564,6 +607,36 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
             if (candidate.score > 0) Text('${candidate.score}%'),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildArtwork(String? artworkUrl, {required double size}) {
+    final url = artworkUrl?.trim() ?? '';
+    final placeholder = ColoredBox(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Icon(Icons.album_outlined, size: size * 0.42),
+    );
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: SizedBox.square(
+        dimension: size,
+        child: url.isEmpty
+            ? placeholder
+            : FutureBuilder<File?>(
+                future: widget.controller.artworkCacheManager.cacheArtwork(url),
+                builder: (context, snapshot) {
+                  final file = snapshot.data;
+                  if (file == null) {
+                    return placeholder;
+                  }
+                  return Image.file(
+                    file,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => placeholder,
+                  );
+                },
+              ),
       ),
     );
   }
@@ -612,7 +685,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
       _message = null;
       _metadata = null;
       _audioFiles = const [];
-      _clearMusicBrainzResults();
+      _clearOnlineMetadataResults();
     });
     try {
       final type = await FileSystemEntity.type(path, followLinks: true);
@@ -661,7 +734,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     setState(() {
       _isReading = true;
       _message = null;
-      _clearMusicBrainzResults();
+      _clearOnlineMetadataResults();
     });
     try {
       final metadata = await widget.controller.readLocalAudioMetadata(path);
@@ -720,55 +793,56 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     }
   }
 
-  Future<void> _searchMusicBrainz() async {
+  Future<void> _searchOnlineMetadata() async {
     setState(() {
       _message = null;
-      _clearMusicBrainzResults();
-      _isSearchingMusicBrainz = true;
+      _clearOnlineMetadataResults();
+      _isSearchingOnlineMetadata = true;
     });
-    final request = _musicBrainzRequest;
+    final request = _onlineMetadataRequest;
     try {
-      final results = await _musicBrainzService.search(
+      final results = await _onlineMetadataService.search(
+        source: _metadataSource,
         title: _titleController.text,
         artist: _artistController.text,
         album: _albumController.text,
       );
-      if (!mounted || request != _musicBrainzRequest) {
+      if (!mounted || request != _onlineMetadataRequest) {
         return;
       }
       setState(() {
-        _musicBrainzResults = results;
+        _onlineMetadataResults = results;
         if (results.isNotEmpty) {
-          _setSelectedMusicBrainzResult(results.first);
+          _setSelectedOnlineMetadataResult(results.first);
         } else {
-          _message = 'MusicBrainz 未找到匹配结果。';
+          _message = '${_metadataSource.label}未找到匹配结果。';
           _messageIsError = false;
         }
       });
     } catch (error) {
-      if (mounted && request == _musicBrainzRequest) {
+      if (mounted && request == _onlineMetadataRequest) {
         _showMessage(_errorText(error), isError: true);
       }
     } finally {
-      if (mounted && request == _musicBrainzRequest) {
-        setState(() => _isSearchingMusicBrainz = false);
+      if (mounted && request == _onlineMetadataRequest) {
+        setState(() => _isSearchingOnlineMetadata = false);
       }
     }
   }
 
-  void _selectMusicBrainzResult(MusicBrainzMetadataCandidate candidate) {
-    setState(() => _setSelectedMusicBrainzResult(candidate));
+  void _selectOnlineMetadataResult(OnlineMetadataCandidate candidate) {
+    setState(() => _setSelectedOnlineMetadataResult(candidate));
   }
 
-  void _setSelectedMusicBrainzResult(MusicBrainzMetadataCandidate candidate) {
-    _selectedMusicBrainzResult = candidate;
-    _selectedMusicBrainzFields = Set<MusicBrainzMetadataField>.of(
-      _availableMusicBrainzFields(candidate),
+  void _setSelectedOnlineMetadataResult(OnlineMetadataCandidate candidate) {
+    _selectedOnlineMetadataResult = candidate;
+    _selectedOnlineMetadataFields = Set<OnlineMetadataField>.of(
+      _availableOnlineMetadataFields(candidate),
     );
   }
 
-  void _applyMusicBrainzFields(Set<MusicBrainzMetadataField> fields) {
-    final candidate = _selectedMusicBrainzResult;
+  void _applyOnlineMetadataFields(Set<OnlineMetadataField> fields) {
+    final candidate = _selectedOnlineMetadataResult;
     if (candidate == null) {
       return;
     }
@@ -778,25 +852,132 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
         continue;
       }
       switch (field) {
-        case MusicBrainzMetadataField.title:
+        case OnlineMetadataField.title:
           _titleController.text = value;
-        case MusicBrainzMetadataField.artist:
+        case OnlineMetadataField.artist:
           _artistController.text = value;
-        case MusicBrainzMetadataField.album:
+        case OnlineMetadataField.album:
           _albumController.text = value;
-        case MusicBrainzMetadataField.genres:
+        case OnlineMetadataField.genres:
           _genresController.text = value;
-        case MusicBrainzMetadataField.year:
+        case OnlineMetadataField.year:
           _yearController.text = value;
+        case OnlineMetadataField.trackNumber:
+          _trackNumberController.text = value;
       }
     }
-    _showMessage('已填入 MusicBrainz 数据，保存后写入文件。');
+    _showMessage('已填入${candidate.source.label}数据，保存后写入文件。');
   }
 
-  List<MusicBrainzMetadataField> _availableMusicBrainzFields(
-    MusicBrainzMetadataCandidate candidate,
+  Future<void> _confirmAndReplaceOnlineMetadata() async {
+    final candidate = _selectedOnlineMetadataResult;
+    final metadata = _metadata;
+    if (candidate == null || metadata == null || _isSaving) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('替换歌曲元数据'),
+        content: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildArtwork(candidate.artworkUrl, size: 72),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    candidate.title,
+                    style: Theme.of(dialogContext).textTheme.titleMedium,
+                  ),
+                  if (candidate.artist.isNotEmpty) Text(candidate.artist),
+                  if (candidate.album.isNotEmpty) Text(candidate.album),
+                  const SizedBox(height: 10),
+                  Text(
+                    candidate.artworkUrl.isEmpty
+                        ? '确认后将直接写入可用字段；当前来源没有返回专辑封面。'
+                        : '确认后将直接写入可用字段和专辑封面。',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('确认替换'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+      _message = null;
+    });
+    try {
+      OnlineMetadataArtwork? artwork;
+      String? artworkWarning;
+      if (candidate.artworkUrl.isNotEmpty) {
+        try {
+          artwork = await _onlineMetadataService.downloadArtwork(
+            candidate.artworkUrl,
+          );
+        } catch (error) {
+          artworkWarning = _errorText(error);
+        }
+      }
+      final updated = await widget.controller.saveAudioMetadata(
+        metadata.copyWith(
+          title: _replacementValue(candidate.title, metadata.title),
+          artist: _replacementValue(candidate.artist, metadata.artist),
+          album: _replacementValue(candidate.album, metadata.album),
+          genres: _replacementValue(candidate.genres, metadata.genres),
+          year: _replacementValue(candidate.year, metadata.year),
+          trackNumber: _replacementValue(
+            candidate.trackNumber,
+            metadata.trackNumber,
+          ),
+        ),
+        artworkBytes: artwork?.bytes,
+        artworkMimeType: artwork?.mimeType,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _setMetadata(updated);
+        _message = artworkWarning == null
+            ? '${candidate.source.label}元数据已写入文件。'
+            : '${candidate.source.label}字段已写入，$artworkWarning';
+        _messageIsError = artworkWarning != null;
+      });
+    } catch (error) {
+      if (mounted) {
+        _showMessage(_errorText(error), isError: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  List<OnlineMetadataField> _availableOnlineMetadataFields(
+    OnlineMetadataCandidate candidate,
   ) {
-    return MusicBrainzMetadataField.values
+    return OnlineMetadataField.values
         .where((field) => candidate.valueFor(field).isNotEmpty)
         .toList(growable: false);
   }
@@ -812,12 +993,12 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     _lyricsController.text = metadata.lyrics;
   }
 
-  void _clearMusicBrainzResults() {
-    _musicBrainzRequest += 1;
-    _musicBrainzResults = const [];
-    _selectedMusicBrainzResult = null;
-    _selectedMusicBrainzFields = const {};
-    _isSearchingMusicBrainz = false;
+  void _clearOnlineMetadataResults() {
+    _onlineMetadataRequest += 1;
+    _onlineMetadataResults = const [];
+    _selectedOnlineMetadataResult = null;
+    _selectedOnlineMetadataFields = const {};
+    _isSearchingOnlineMetadata = false;
   }
 
   void _showMessage(String message, {bool isError = false}) {
@@ -885,13 +1066,19 @@ String _audioFormat(String path) {
   return dot < 0 ? '' : name.substring(dot + 1).toUpperCase();
 }
 
-String _musicBrainzFieldLabel(MusicBrainzMetadataField field) {
+String _replacementValue(String candidate, String current) {
+  final value = candidate.trim();
+  return value.isEmpty ? current : value;
+}
+
+String _onlineMetadataFieldLabel(OnlineMetadataField field) {
   return switch (field) {
-    MusicBrainzMetadataField.title => '标题',
-    MusicBrainzMetadataField.artist => '歌手',
-    MusicBrainzMetadataField.album => '专辑',
-    MusicBrainzMetadataField.genres => '流派',
-    MusicBrainzMetadataField.year => '年份',
+    OnlineMetadataField.title => '标题',
+    OnlineMetadataField.artist => '歌手',
+    OnlineMetadataField.album => '专辑',
+    OnlineMetadataField.genres => '流派',
+    OnlineMetadataField.year => '年份',
+    OnlineMetadataField.trackNumber => '曲目号',
   };
 }
 

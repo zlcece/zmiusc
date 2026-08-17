@@ -24,6 +24,7 @@ import 'package:http/testing.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:zmusic/src/app.dart';
 import 'package:zmusic/src/app_controller.dart';
+import 'package:zmusic/src/app_logger.dart';
 import 'package:zmusic/src/app_update.dart';
 import 'package:zmusic/src/artwork_cache.dart';
 import 'package:zmusic/src/audio_cache.dart';
@@ -34,6 +35,7 @@ import 'package:zmusic/src/lyrics_timeline.dart';
 import 'package:zmusic/src/local_library.dart';
 import 'package:zmusic/src/settings_models.dart';
 import 'package:zmusic/src/models.dart';
+import 'package:zmusic/src/playback_source.dart';
 import 'package:zmusic/src/player_controller.dart';
 import 'package:zmusic/src/playlist_sync.dart';
 import 'package:zmusic/src/playlist_tools_page.dart';
@@ -156,8 +158,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.0.17',
-    buildNumber: '22',
+    version: '1.0.20',
+    buildNumber: '25',
     buildSignature: '',
   );
 
@@ -453,6 +455,7 @@ void main() {
                   "versionCode": 110,
                   "downloadUrl": "https://file.zuitimes.com/zmusic/1.0.10/zmusic-windows-x64.exe",
                   "fileName": "zmusic-windows-x64.exe",
+                  "md5": "08D6C05A21512A79A1DFEB9D2A8F262F",
                   "updateContent": ["修复播放", "优化启动"],
                   "releaseTime": "2026-07-14"
                 },
@@ -466,10 +469,15 @@ void main() {
 
     final update = await service.fetchForPlatform('windows');
 
-    expect(requests, [appUpdateManifestUri]);
+    expect(
+      requests.single.replace(queryParameters: const {}),
+      appUpdateManifestUri,
+    );
+    expect(requests.single.queryParameters['v'], isNotEmpty);
     expect(update.latestVersion, '1.0.10');
     expect(update.versionCode, 110);
     expect(update.fileName, 'zmusic-windows-x64.exe');
+    expect(update.md5Checksum, '08d6c05a21512a79a1dfeb9d2a8f262f');
     expect(update.updateContent, ['修复播放', '优化启动']);
     expect(update.releaseTime, '2026-07-14');
   });
@@ -493,7 +501,10 @@ void main() {
     });
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
-        expect(request.url, downloadUri);
+        expect(request.url.replace(queryParameters: const {}), downloadUri);
+        expect(request.url.queryParameters['v'], isNotEmpty);
+        expect(request.headers['Cache-Control'], 'no-cache');
+        expect(request.headers['Pragma'], 'no-cache');
         return http.Response.bytes([1, 2, 3, 4], 200);
       }),
     );
@@ -505,6 +516,7 @@ void main() {
         versionCode: 16,
         downloadUri: downloadUri,
         fileName: r'..\zmusic-windows-x64.exe',
+        md5Checksum: '08d6c05a21512a79a1dfeb9d2a8f262f',
         updateContent: const [],
         releaseTime: '',
       ),
@@ -1307,6 +1319,55 @@ void main() {
     );
   });
 
+  test('only opens the final track during rapid startup switching', () async {
+    final engine = _CompletionPlaybackEngine();
+    final player = PlayerController(
+      playbackEngine: engine,
+      startupRecoveryTimeout: Duration.zero,
+      startupSwitchSettleDelay: const Duration(milliseconds: 40),
+    );
+    addTearDown(player.dispose);
+    const tracks = [
+      Track(
+        id: 'rapid-a',
+        title: 'Rapid A',
+        artist: 'Artist',
+        album: 'Album',
+        streamUrl: 'https://music.example.com/rapid-a.mp3',
+        sourceType: MusicSourceType.subsonic,
+        sourceName: 'Navidrome',
+      ),
+      Track(
+        id: 'rapid-b',
+        title: 'Rapid B',
+        artist: 'Artist',
+        album: 'Album',
+        streamUrl: 'https://music.example.com/rapid-b.mp3',
+        sourceType: MusicSourceType.subsonic,
+        sourceName: 'Navidrome',
+      ),
+      Track(
+        id: 'rapid-c',
+        title: 'Rapid C',
+        artist: 'Artist',
+        album: 'Album',
+        streamUrl: 'https://music.example.com/rapid-c.mp3',
+        sourceType: MusicSourceType.subsonic,
+        sourceName: 'Navidrome',
+      ),
+    ];
+
+    final first = player.playTracks(tracks, 0);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final second = player.playTracks(tracks, 1);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final third = player.playTracks(tracks, 2);
+    await Future.wait([first, second, third]);
+
+    expect(engine.openedUrls, ['https://music.example.com/rapid-c.mp3']);
+    expect(player.currentTrack?.id, 'rapid-c');
+  });
+
   test('retries a stalled playback startup once', () async {
     final engine = _StalledStartupPlaybackEngine();
     final player = PlayerController(
@@ -1334,6 +1395,33 @@ void main() {
     expect(player.playSessionId, 1);
   });
 
+  test('stops buffering after bounded startup recovery attempts', () async {
+    final engine = _StalledStartupPlaybackEngine(succeedAfter: 99);
+    final player = PlayerController(
+      playbackEngine: engine,
+      startupRecoveryTimeout: const Duration(milliseconds: 15),
+      startupRecoveryAttempts: 2,
+    );
+    addTearDown(player.dispose);
+    const track = Track(
+      id: 'always-stalled-song',
+      title: 'Always Stalled Song',
+      artist: 'Artist',
+      album: 'Album',
+      streamUrl: 'https://music.example.com/stream/always-stalled-song.mp3',
+      sourceType: MusicSourceType.subsonic,
+      sourceName: 'Navidrome',
+    );
+
+    await player.playTrack(track);
+    await _waitFor(() => engine.openCount == 3);
+    await _waitFor(() => !player.isBuffering);
+
+    expect(engine.openCount, 3);
+    expect(player.isPlaying, isFalse);
+    expect(player.currentTrack?.id, track.id);
+  });
+
   test('does not retry a stalled startup after the user pauses', () async {
     final engine = _StalledStartupPlaybackEngine();
     final player = PlayerController(
@@ -1359,6 +1447,63 @@ void main() {
     expect(player.isPlaying, isFalse);
     expect(player.playSessionId, 1);
   });
+
+  test(
+    'reopens a completed streaming cache locally after startup stalls',
+    () async {
+      final originalHttpOverrides = HttpOverrides.current;
+      HttpOverrides.global = null;
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'zmusic-stalled-cache-recovery-test-',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        HttpOverrides.global = originalHttpOverrides;
+        await server.close(force: true);
+        if (tempDirectory.existsSync()) {
+          await tempDirectory.delete(recursive: true);
+        }
+      });
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType('audio', 'mpeg');
+        request.response.contentLength = 4096;
+        request.response.add(List<int>.filled(4096, 7));
+        await request.response.close();
+      });
+
+      final engine = _CacheCompletingStalledPlaybackEngine();
+      addTearDown(engine.dispose);
+      final cacheFile = File(
+        '${tempDirectory.path}${Platform.pathSeparator}stalled.mp3',
+      );
+      final player = PlayerController(
+        playbackEngine: engine,
+        startupRecoveryTimeout: const Duration(milliseconds: 100),
+      );
+      addTearDown(player.dispose);
+      player.trackResolver = (track) async =>
+          PlaybackTrack(track: track, streamingCacheFile: cacheFile);
+      final track = Track(
+        id: 'stalled-cached-song',
+        title: 'Stalled Cached Song',
+        artist: 'Artist',
+        album: 'Album',
+        streamUrl: 'http://127.0.0.1:${server.port}/stalled.mp3',
+        sourceType: MusicSourceType.subsonic,
+        sourceName: 'Navidrome',
+      );
+
+      await player.playTrack(track);
+      await _waitFor(() => engine.openedUrls.length == 2);
+
+      expect(Uri.parse(engine.openedUrls.first).host, '127.0.0.1');
+      expect(Uri.parse(engine.openedUrls.last).scheme, 'file');
+      expect(Uri.parse(engine.openedUrls.last).toFilePath(), cacheFile.path);
+      expect(isCompletedAudioCacheFile(cacheFile), isTrue);
+      expect(player.isPlaying, isTrue);
+      expect(engine.position, const Duration(seconds: 2));
+    },
+  );
 
   test('paginates library section items with bounded page indexes', () {
     final items = List.generate(
@@ -3315,6 +3460,180 @@ plain text
     expect(originRequests, 1);
   });
 
+  test(
+    'retries a streaming origin that stalls before response headers',
+    () async {
+      final originalHttpOverrides = HttpOverrides.current;
+      HttpOverrides.global = null;
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'zmusic-audio-cache-retry-test-',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() async {
+        HttpOverrides.global = originalHttpOverrides;
+        await server.close(force: true);
+        if (tempDirectory.existsSync()) {
+          await tempDirectory.delete(recursive: true);
+        }
+      });
+
+      var originRequests = 0;
+      server.listen((request) async {
+        originRequests += 1;
+        if (originRequests < 3) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
+        try {
+          request.response.headers.contentType = ContentType('audio', 'mpeg');
+          request.response.contentLength = 1024;
+          request.response.add(List<int>.filled(1024, 7));
+          await request.response.close();
+        } catch (_) {
+          // Timed-out attempts are closed by the proxy before the server replies.
+        }
+      });
+
+      final cacheFile = File(
+        '${tempDirectory.path}${Platform.pathSeparator}song.mp3',
+      );
+      final proxy = StreamingAudioCacheProxy(
+        Uri.parse('http://127.0.0.1:${server.port}/song.mp3'),
+        cacheFile: cacheFile,
+        originResponseTimeout: const Duration(milliseconds: 50),
+        originRequestAttempts: 3,
+      );
+      addTearDown(proxy.cancel);
+
+      await proxy.prefetch();
+
+      expect(originRequests, 3);
+      expect(cacheFile.lengthSync(), 1024);
+    },
+  );
+
+  test(
+    'resumes a streaming origin that closes before its declared length',
+    () async {
+      final originalHttpOverrides = HttpOverrides.current;
+      HttpOverrides.global = null;
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'zmusic-audio-cache-resume-test-',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final payload = List<int>.generate(4096, (index) => index % 251);
+      addTearDown(() async {
+        HttpOverrides.global = originalHttpOverrides;
+        await server.close(force: true);
+        if (tempDirectory.existsSync()) {
+          await tempDirectory.delete(recursive: true);
+        }
+      });
+
+      final requestedRanges = <String?>[];
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader);
+        requestedRanges.add(range);
+        request.response.headers.contentType = ContentType('audio', 'mpeg');
+        if (range == null) {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-2047/${payload.length}',
+          );
+          request.response.contentLength = 2048;
+          request.response.add(payload.sublist(0, 2048));
+          await request.response.close();
+          return;
+        }
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 2048-4095/${payload.length}',
+        );
+        request.response.contentLength = payload.length - 2048;
+        request.response.add(payload.sublist(2048));
+        await request.response.close();
+      });
+
+      final cacheFile = File(
+        '${tempDirectory.path}${Platform.pathSeparator}song.mp3',
+      );
+      final proxy = StreamingAudioCacheProxy(
+        Uri.parse('http://127.0.0.1:${server.port}/song.mp3'),
+        cacheFile: cacheFile,
+      );
+      addTearDown(proxy.cancel);
+
+      await proxy.prefetch();
+
+      expect(requestedRanges, [null, 'bytes=2048-']);
+      expect(await cacheFile.readAsBytes(), payload);
+    },
+  );
+
+  test('resumes a streaming origin after its response body stalls', () async {
+    final originalHttpOverrides = HttpOverrides.current;
+    HttpOverrides.global = null;
+    final tempDirectory = await Directory.systemTemp.createTemp(
+      'zmusic-audio-cache-body-timeout-test-',
+    );
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final payload = List<int>.generate(4096, (index) => index % 251);
+    addTearDown(() async {
+      HttpOverrides.global = originalHttpOverrides;
+      await server.close(force: true);
+      if (tempDirectory.existsSync()) {
+        await tempDirectory.delete(recursive: true);
+      }
+    });
+
+    final requestedRanges = <String?>[];
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      requestedRanges.add(range);
+      request.response.headers.contentType = ContentType('audio', 'mpeg');
+      if (range == null) {
+        request.response.bufferOutput = false;
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 0-4095/${payload.length}',
+        );
+        request.response.add(payload.sublist(0, 1024));
+        await request.response.flush();
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        try {
+          await request.response.close();
+        } catch (_) {}
+        return;
+      }
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes 1024-4095/${payload.length}',
+      );
+      request.response.contentLength = payload.length - 1024;
+      request.response.add(payload.sublist(1024));
+      await request.response.close();
+    });
+
+    final cacheFile = File(
+      '${tempDirectory.path}${Platform.pathSeparator}song.mp3',
+    );
+    final proxy = StreamingAudioCacheProxy(
+      Uri.parse('http://127.0.0.1:${server.port}/song.mp3'),
+      cacheFile: cacheFile,
+      originReadTimeout: const Duration(milliseconds: 200),
+      originRequestAttempts: 2,
+    );
+    addTearDown(proxy.cancel);
+
+    await proxy.prefetch();
+
+    expect(requestedRanges, [null, 'bytes=1024-']);
+    expect(await cacheFile.readAsBytes(), payload);
+  });
+
   test('serves far range requests from origin while cache continues', () async {
     final originalHttpOverrides = HttpOverrides.current;
     HttpOverrides.global = null;
@@ -3580,41 +3899,46 @@ plain text
     expect(cacheFile.existsSync(), isFalse);
   });
 
-  test('repairs and reuses completed cache files missing marker', () async {
-    final tempDirectory = await Directory.systemTemp.createTemp(
-      'zmusic-audio-cache-test-',
-    );
-    addTearDown(() async {
-      if (tempDirectory.existsSync()) {
-        await tempDirectory.delete(recursive: true);
-      }
-    });
-    final manager = AudioCacheManager();
-    const track = Track(
-      id: 'song-replay',
-      title: 'Song',
-      artist: 'Artist',
-      album: 'Album',
-      streamUrl: 'https://music.example.com/rest/stream.view?id=song-replay',
-      sourceType: MusicSourceType.subsonic,
-      sourceName: 'Navidrome',
-      sourceItemId: 'song-replay',
-      audioFormat: 'MP3',
-    );
-    final settings = AppSettings(cacheDirectory: tempDirectory.path);
-    final initial = await manager.resolveForPlayback(track, settings);
-    final cacheFile = initial.streamingCacheFile!;
-    await cacheFile.create(recursive: true);
-    await cacheFile.writeAsBytes([1, 2, 3]);
-    await audioCachePartialMarker(cacheFile).delete();
-    await File('${cacheFile.path}.mime').writeAsString('audio/mpeg');
+  test(
+    'rejects legacy cache files missing a sized completion marker',
+    () async {
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'zmusic-audio-cache-test-',
+      );
+      addTearDown(() async {
+        if (tempDirectory.existsSync()) {
+          await tempDirectory.delete(recursive: true);
+        }
+      });
+      final manager = AudioCacheManager();
+      const track = Track(
+        id: 'song-replay',
+        title: 'Song',
+        artist: 'Artist',
+        album: 'Album',
+        streamUrl: 'https://music.example.com/rest/stream.view?id=song-replay',
+        sourceType: MusicSourceType.subsonic,
+        sourceName: 'Navidrome',
+        sourceItemId: 'song-replay',
+        audioFormat: 'MP3',
+      );
+      final settings = AppSettings(cacheDirectory: tempDirectory.path);
+      final initial = await manager.resolveForPlayback(track, settings);
+      final cacheFile = initial.streamingCacheFile!;
+      await cacheFile.create(recursive: true);
+      await cacheFile.writeAsBytes([1, 2, 3]);
+      await audioCachePartialMarker(cacheFile).delete();
+      await File('${cacheFile.path}.mime').writeAsString('audio/mpeg');
 
-    final resolved = await manager.resolveForPlayback(track, settings);
+      final resolved = await manager.resolveForPlayback(track, settings);
 
-    expect(Uri.parse(resolved.track.streamUrl).scheme, 'file');
-    expect(resolved.streamingCacheFile, isNull);
-    expect(audioCacheCompletionMarker(cacheFile).existsSync(), isTrue);
-  });
+      expect(resolved.track.streamUrl, track.streamUrl);
+      expect(resolved.streamingCacheFile?.path, cacheFile.path);
+      expect(cacheFile.existsSync(), isFalse);
+      expect(audioCacheCompletionMarker(cacheFile).existsSync(), isFalse);
+      expect(audioCachePartialMarker(cacheFile).existsSync(), isTrue);
+    },
+  );
 
   test('reuses only cache files with completion markers', () async {
     final tempDirectory = await Directory.systemTemp.createTemp(
@@ -3642,7 +3966,7 @@ plain text
     final cacheFile = initial.streamingCacheFile!;
     await cacheFile.create(recursive: true);
     await cacheFile.writeAsBytes([1, 2, 3]);
-    await audioCacheCompletionMarker(cacheFile).create(recursive: true);
+    await markAudioCacheComplete(cacheFile);
 
     final resolved = await manager.resolveForPlayback(track, settings);
 
@@ -3691,7 +4015,7 @@ plain text
     final cacheFile = initial.streamingCacheFile!;
     await cacheFile.create(recursive: true);
     await cacheFile.writeAsBytes([1, 2, 3]);
-    await audioCacheCompletionMarker(cacheFile).create(recursive: true);
+    await markAudioCacheComplete(cacheFile);
 
     final resolved = await manager.resolveForPlayback(second, settings);
 
@@ -3927,8 +4251,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.0.17',
-        buildNumber: '21',
+        version: '1.0.20',
+        buildNumber: '25',
         buildSignature: '',
       );
     });
@@ -3976,6 +4300,87 @@ plain text
     debugDefaultTargetPlatformOverride = null;
   });
 
+  testWidgets('settings changes log level and opens current logs', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    tester.view.physicalSize = const Size(1264, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      AppLogger.instance.setLevel(AppLogLevel.error);
+    });
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final store = _MemoryLibraryStore();
+    final controller = AppController(store: store, player: PlayerController());
+    AppLogger.instance.error('test', 'viewer entry');
+
+    await tester.pumpWidget(ZmusicApp(controller: controller));
+    await openSettingsTab(tester);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('settings-log-section')), findsNothing);
+    final unlockTarget = find.byKey(
+      const ValueKey('settings-log-unlock-target'),
+    );
+    for (var index = 0; index < 5; index += 1) {
+      await tester.tap(unlockTarget);
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(
+      find.byKey(const ValueKey('settings-log-unlock-password')),
+      findsOneWidget,
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('settings-log-unlock-password')),
+      'wrong',
+    );
+    await tester.tap(find.byKey(const ValueKey('settings-log-unlock-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-log-section')), findsNothing);
+
+    for (var index = 0; index < 5; index += 1) {
+      await tester.tap(unlockTarget);
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.enterText(
+      find.byKey(const ValueKey('settings-log-unlock-password')),
+      'rizhi',
+    );
+    await tester.tap(find.byKey(const ValueKey('settings-log-unlock-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-log-section')), findsOneWidget);
+
+    await openHomeTab(tester, label: '音乐', icon: Icons.music_note_rounded);
+    await openSettingsTab(tester);
+    expect(find.byKey(const ValueKey('settings-log-section')), findsOneWidget);
+
+    final levelSelector = find.byKey(const ValueKey('settings-log-level'));
+    final settingsList = find
+        .ancestor(of: levelSelector, matching: find.byType(ListView))
+        .first;
+    await tester.drag(settingsList, const Offset(0, -1800));
+    await tester.pumpAndSettle();
+    await tester.tap(levelSelector);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('警告').last);
+    await tester.pumpAndSettle();
+    expect(controller.settings.logLevel, AppLogLevel.warning);
+    expect(store.savedSettings?.logLevel, AppLogLevel.warning);
+
+    final openLogs = find.byKey(const ValueKey('settings-open-log-viewer'));
+    await tester.ensureVisible(openLogs);
+    await tester.tap(openLogs);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('app-log-viewer-page')), findsOneWidget);
+    expect(find.textContaining('viewer entry'), findsOneWidget);
+    expect(find.byKey(const ValueKey('current-log-list')), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   testWidgets('startup update check shows remote release information', (
     tester,
   ) async {
@@ -3985,18 +4390,23 @@ plain text
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
         requestCount += 1;
-        expect(request.url, appUpdateManifestUri);
+        expect(
+          request.url.replace(queryParameters: const {}),
+          appUpdateManifestUri,
+        );
+        expect(request.url.queryParameters['v'], isNotEmpty);
         return http.Response.bytes(
           utf8.encode(
             jsonEncode({
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.18',
-                  'versionCode': 118,
+                  'latestVersion': '1.0.20',
+                  'versionCode': 120,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.0.18/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.0.20/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
+                  'md5': 'D41D8CD98F00B204E9800998ECF8427E',
                   'updateContent': ['启动自动检查更新'],
                   'releaseTime': '2026-07-16',
                 },
@@ -4021,7 +4431,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.0.18'), findsOneWidget);
+    expect(find.text('发现新版本 1.0.20'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4033,7 +4443,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.0.18/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.0.20/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4043,21 +4453,26 @@ plain text
     });
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
-        if (request.url == downloadUri) {
+        if (request.url.replace(queryParameters: const {}) == downloadUri) {
           return downloadResponse.future;
         }
         requestCount += 1;
-        expect(request.url, appUpdateManifestUri);
+        expect(
+          request.url.replace(queryParameters: const {}),
+          appUpdateManifestUri,
+        );
+        expect(request.url.queryParameters['v'], isNotEmpty);
         return http.Response.bytes(
           utf8.encode(
             jsonEncode({
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.18',
-                  'versionCode': 118,
+                  'latestVersion': '1.0.20',
+                  'versionCode': 120,
                   'downloadUrl': downloadUri.toString(),
                   'fileName': 'zmusic-windows-x64.exe',
+                  'md5': 'D41D8CD98F00B204E9800998ECF8427E',
                   'updateContent': ['修复播放详情跳转', '优化更新检查'],
                   'releaseTime': '2026-07-14',
                 },
@@ -4090,8 +4505,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.0.18'));
-    expect(find.text('当前版本：1.0.17'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.0.20'));
+    expect(find.text('当前版本：1.0.20'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('下载更新'), findsOneWidget);
@@ -6870,7 +7285,7 @@ plain text
     debugDefaultTargetPlatformOverride = null;
   });
 
-  testWidgets('timed lyrics seek on tap and after manual scrolling', (
+  testWidgets('timed lyrics preview before confirmed seek and auto reset', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1264, 720);
@@ -6904,16 +7319,30 @@ plain text
         scrollDelta: const Offset(0, 55),
       ),
     );
-    await tester.pumpAndSettle();
-    expect(player.soughtPosition, const Duration(seconds: 10));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(player.soughtPosition, isNull);
+    expect(find.byKey(const ValueKey('lyric-seek-button')), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('timed-lyric-1')));
-    await tester.pumpAndSettle();
-    expect(player.soughtPosition, const Duration(seconds: 10));
+    await tester.tap(find.byKey(const ValueKey('timed-lyric-2')));
+    await tester.pump();
+    expect(player.soughtPosition, isNull);
 
-    await tester.drag(lyricsList, const Offset(0, -70));
+    await tester.tap(find.byKey(const ValueKey('lyric-seek-button')));
     await tester.pumpAndSettle();
     expect(player.soughtPosition, const Duration(seconds: 20));
+
+    player.soughtPosition = null;
+    player.emitPosition(Duration.zero);
+    await tester.pumpAndSettle();
+    await tester.drag(lyricsList, const Offset(0, -70));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(player.soughtPosition, isNull);
+    expect(find.byKey(const ValueKey('lyric-seek-button')), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(player.soughtPosition, isNull);
+    expect(find.byKey(const ValueKey('lyric-seek-button')), findsNothing);
   });
 
   testWidgets('now playing artist and album links open scoped search results', (
@@ -7626,6 +8055,9 @@ class _SystemMediaPlayerController extends PlayerController {
 }
 
 class _StalledStartupPlaybackEngine implements PlaybackEngine {
+  _StalledStartupPlaybackEngine({this.succeedAfter = 2});
+
+  final int succeedAfter;
   int openCount = 0;
   bool _playing = false;
   bool _buffering = false;
@@ -7671,9 +8103,100 @@ class _StalledStartupPlaybackEngine implements PlaybackEngine {
   Future<void> openAndPlay(String url) async {
     openCount += 1;
     _playing = true;
-    if (openCount == 1) {
+    if (openCount < succeedAfter) {
       _buffering = true;
       _position = Duration.zero;
+      return;
+    }
+    _buffering = false;
+    _position = const Duration(seconds: 2);
+  }
+
+  @override
+  Future<void> play() async {
+    _playing = true;
+  }
+
+  @override
+  Future<void> pause() async {
+    _playing = false;
+  }
+
+  @override
+  Future<void> stop() async {
+    _playing = false;
+    _buffering = false;
+    _position = Duration.zero;
+  }
+
+  @override
+  Future<void> seek(Duration position) async {
+    _position = position;
+  }
+
+  @override
+  Future<void> setVolume(double volume) async {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _CacheCompletingStalledPlaybackEngine implements PlaybackEngine {
+  final List<String> openedUrls = <String>[];
+  bool _playing = false;
+  bool _buffering = false;
+  Duration _position = Duration.zero;
+
+  @override
+  bool get playing => _playing;
+
+  @override
+  bool get buffering => _buffering;
+
+  @override
+  Duration get position => _position;
+
+  @override
+  Duration? get duration => const Duration(minutes: 3);
+
+  @override
+  Duration get bufferedPosition => Duration.zero;
+
+  @override
+  Stream<bool> get completedStream => const Stream<bool>.empty();
+
+  @override
+  Stream<Duration?> get durationStream => const Stream<Duration?>.empty();
+
+  @override
+  Stream<Duration> get positionStream => const Stream<Duration>.empty();
+
+  @override
+  Stream<Duration> get bufferedPositionStream => const Stream<Duration>.empty();
+
+  @override
+  Stream<bool> get playingStream => const Stream<bool>.empty();
+
+  @override
+  Stream<bool> get bufferingStream => const Stream<bool>.empty();
+
+  @override
+  Future<void> open(String url) async {}
+
+  @override
+  Future<void> openAndPlay(String url) async {
+    openedUrls.add(url);
+    _playing = true;
+    if (openedUrls.length == 1) {
+      _buffering = true;
+      final client = HttpClient();
+      try {
+        final request = await client.getUrl(Uri.parse(url));
+        final response = await request.close();
+        await response.drain<void>();
+      } finally {
+        client.close(force: true);
+      }
       return;
     }
     _buffering = false;

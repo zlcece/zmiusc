@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'package:media_kit/media_kit.dart' as media_kit;
 
 import 'src/app.dart';
 import 'src/app_controller.dart';
+import 'src/app_logger.dart';
 import 'src/desktop_integration.dart';
 import 'src/library_store.dart';
 import 'src/player_controller.dart';
@@ -18,8 +20,39 @@ const MethodChannel _desktopFileDropChannel = MethodChannel(
   'com.zmusic.app/file_drop',
 );
 
-Future<void> main() async {
+void main() {
+  runZonedGuarded(_bootstrap, (error, stackTrace) {
+    AppLogger.instance.error(
+      'app',
+      '未捕获的异步异常',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  });
+}
+
+Future<void> _bootstrap() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppLogger.instance.initialize();
+  FlutterError.onError = (details) {
+    AppLogger.instance.error(
+      'flutter',
+      details.context?.toDescription() ?? '未捕获的 Flutter 异常',
+      error: details.exception,
+      stackTrace: details.stack,
+    );
+    FlutterError.presentError(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stackTrace) {
+    AppLogger.instance.error(
+      'platform',
+      '未捕获的平台异常',
+      error: error,
+      stackTrace: stackTrace,
+    );
+    return true;
+  };
+  AppLogger.instance.info('app', 'Zmusic 开始启动');
   media_kit.MediaKit.ensureInitialized();
 
   final controller = AppController(
@@ -66,7 +99,7 @@ Future<void> _notifyMacOSFileDropReady() async {
   try {
     await _desktopFileDropChannel.invokeMethod<void>('ready');
   } on PlatformException catch (error) {
-    debugPrint('Failed to initialize macOS file open channel: $error');
+    AppLogger.instance.error('desktop', '初始化 macOS 文件打开通道失败', error: error);
   }
 }
 
@@ -77,8 +110,12 @@ Future<void> _loadController(
   try {
     await controller.load(loadLibrary: loadLibrary);
   } catch (error, stackTrace) {
-    debugPrint('Failed to load app state: $error');
-    debugPrint('$stackTrace');
+    AppLogger.instance.error(
+      'app',
+      '加载应用状态失败',
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 }
 
@@ -88,8 +125,12 @@ Future<void> _initializeDesktopIntegration(
   try {
     await integration.initialize();
   } catch (error, stackTrace) {
-    debugPrint('Failed to initialize desktop integration: $error');
-    debugPrint('$stackTrace');
+    AppLogger.instance.error(
+      'desktop',
+      '初始化桌面集成失败',
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 }
 
@@ -99,7 +140,11 @@ Future<void> _initializeSystemMediaControls(
   try {
     await controls.initialize();
   } catch (error, stackTrace) {
-    debugPrint('Failed to initialize system media controls: $error');
-    debugPrint('$stackTrace');
+    AppLogger.instance.error(
+      'media-controls',
+      '初始化系统媒体控制失败',
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 }
