@@ -47,11 +47,17 @@ class AudioCacheManager {
       '${cacheDirectory.path}${Platform.pathSeparator}${_cacheFileName(track, uri)}',
     );
     if (isCompletedAudioCacheFile(cachedFile)) {
-      await _ensureAudioCacheCompletionMarker(cachedFile);
-      await cachedFile.setLastModified(DateTime.now());
-      return PlaybackTrack(
-        track: track.copyWith(streamUrl: Uri.file(cachedFile.path).toString()),
-      );
+      try {
+        await _ensureAudioCacheCompletionMarker(cachedFile);
+        await cachedFile.setLastModified(DateTime.now());
+        return PlaybackTrack(
+          track: track.copyWith(
+            streamUrl: Uri.file(cachedFile.path).toString(),
+          ),
+        );
+      } on FileSystemException {
+        // A concurrent trim may remove an old entry between validation and use.
+      }
     }
     try {
       final discarded = await _discardIncompleteCacheFile(cachedFile);
@@ -272,14 +278,14 @@ Future<void> markAudioCacheComplete(File cacheFile) async {
 }
 
 bool isCompletedAudioCacheFile(File cacheFile) {
-  if (!cacheFile.existsSync() || cacheFile.lengthSync() <= 0) {
-    return false;
-  }
-  final marker = audioCacheCompletionMarker(cacheFile);
-  if (!marker.existsSync()) {
-    return false;
-  }
   try {
+    if (!cacheFile.existsSync() || cacheFile.lengthSync() <= 0) {
+      return false;
+    }
+    final marker = audioCacheCompletionMarker(cacheFile);
+    if (!marker.existsSync()) {
+      return false;
+    }
     final expectedLength = int.tryParse(marker.readAsStringSync().trim());
     return expectedLength != null &&
         expectedLength > 0 &&

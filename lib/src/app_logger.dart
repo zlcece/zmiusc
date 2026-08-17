@@ -61,8 +61,11 @@ class AppLogger extends ChangeNotifier {
   String? get directoryPath => _directory?.path;
 
   Future<void> initialize({Directory? directory}) async {
+    await flush();
     _directory = directory ?? await _defaultLogDirectory();
     await _directory!.create(recursive: true);
+    await _clearPreviousSession();
+    _entries.clear();
   }
 
   void setLevel(AppLogLevel value) {
@@ -203,6 +206,24 @@ class AppLogger extends ChangeNotifier {
       final source = _logFile(index - 1);
       if (await source.exists()) {
         await source.rename(target.path);
+      }
+    }
+  }
+
+  Future<void> _clearPreviousSession() async {
+    for (var index = 0; index < retainedFileCount; index += 1) {
+      final file = _logFile(index);
+      if (!await file.exists()) {
+        continue;
+      }
+      try {
+        await file.delete();
+      } on FileSystemException {
+        try {
+          await file.writeAsString('', mode: FileMode.write);
+        } on FileSystemException {
+          // Logging must never prevent the application from starting.
+        }
       }
     }
   }

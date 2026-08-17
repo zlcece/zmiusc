@@ -158,8 +158,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.0.20',
-    buildNumber: '25',
+    version: '1.0.21',
+    buildNumber: '26',
     buildSignature: '',
   );
 
@@ -470,8 +470,8 @@ void main() {
     final update = await service.fetchForPlatform('windows');
 
     expect(
-      requests.single.replace(queryParameters: const {}),
-      appUpdateManifestUri,
+      requests.single.toString().split('?').first,
+      appUpdateManifestUri.toString(),
     );
     expect(requests.single.queryParameters['v'], isNotEmpty);
     expect(update.latestVersion, '1.0.10');
@@ -501,7 +501,7 @@ void main() {
     });
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
-        expect(request.url.replace(queryParameters: const {}), downloadUri);
+        expect(request.url.toString().split('?').first, downloadUri.toString());
         expect(request.url.queryParameters['v'], isNotEmpty);
         expect(request.headers['Cache-Control'], 'no-cache');
         expect(request.headers['Pragma'], 'no-cache');
@@ -4251,8 +4251,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.0.20',
-        buildNumber: '25',
+        version: '1.0.21',
+        buildNumber: '26',
         buildSignature: '',
       );
     });
@@ -4391,8 +4391,8 @@ plain text
       httpClient: MockClient((request) async {
         requestCount += 1;
         expect(
-          request.url.replace(queryParameters: const {}),
-          appUpdateManifestUri,
+          request.url.toString().split('?').first,
+          appUpdateManifestUri.toString(),
         );
         expect(request.url.queryParameters['v'], isNotEmpty);
         return http.Response.bytes(
@@ -4401,10 +4401,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.20',
-                  'versionCode': 120,
+                  'latestVersion': '1.0.22',
+                  'versionCode': 122,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.0.20/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.0.22/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'md5': 'D41D8CD98F00B204E9800998ECF8427E',
                   'updateContent': ['启动自动检查更新'],
@@ -4431,7 +4431,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.0.20'), findsOneWidget);
+    expect(find.text('发现新版本 1.0.22'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4443,7 +4443,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.0.20/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.0.22/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4453,13 +4453,13 @@ plain text
     });
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
-        if (request.url.replace(queryParameters: const {}) == downloadUri) {
+        if (request.url.toString().split('?').first == downloadUri.toString()) {
           return downloadResponse.future;
         }
         requestCount += 1;
         expect(
-          request.url.replace(queryParameters: const {}),
-          appUpdateManifestUri,
+          request.url.toString().split('?').first,
+          appUpdateManifestUri.toString(),
         );
         expect(request.url.queryParameters['v'], isNotEmpty);
         return http.Response.bytes(
@@ -4468,8 +4468,8 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.20',
-                  'versionCode': 120,
+                  'latestVersion': '1.0.22',
+                  'versionCode': 122,
                   'downloadUrl': downloadUri.toString(),
                   'fileName': 'zmusic-windows-x64.exe',
                   'md5': 'D41D8CD98F00B204E9800998ECF8427E',
@@ -4505,8 +4505,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.0.20'));
-    expect(find.text('当前版本：1.0.20'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.0.22'));
+    expect(find.text('当前版本：1.0.21'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('下载更新'), findsOneWidget);
@@ -7111,6 +7111,9 @@ plain text
   });
 
   testWidgets('initializes player volume to 55 percent', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
     final player = _RecordingPlayerController();
     final controller = AppController(store: LibraryStore(), player: player);
 
@@ -7118,6 +7121,7 @@ plain text
     await tester.pump();
 
     expect(player.assignedVolume, 0.55);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('desktop volume slider has a usable vertical track', (

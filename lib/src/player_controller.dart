@@ -17,7 +17,7 @@ class PlayerController extends ChangeNotifier {
   PlayerController({
     @visibleForTesting PlaybackEngine? playbackEngine,
     @visibleForTesting
-    this._startupRecoveryTimeout = const Duration(seconds: 12),
+    this._startupRecoveryTimeout = const Duration(seconds: 20),
     @visibleForTesting this._startupRecoveryAttempts = 2,
     @visibleForTesting Duration? startupSwitchSettleDelay,
   }) : _audioPlayer = playbackEngine ?? _createPlaybackEngine(),
@@ -40,6 +40,10 @@ class PlayerController extends ChangeNotifier {
       notifyListeners();
     });
     _playingSubscription = _audioPlayer.playingStream.listen((playing) {
+      if (playing && _directFallbackRequestId == _playRequestId) {
+        AppLogger.instance.info('player', '原始音频流已由播放器接收并开始播放');
+        _directFallbackRequestId = null;
+      }
       if (playing) {
         _maybeStartNextTrackPrefetch();
       } else {
@@ -91,6 +95,7 @@ class PlayerController extends ChangeNotifier {
   int _nextTrackPrefetchRequestId = 0;
   int? _preparedShuffleNextIndex;
   int? _openingPlaybackRequestId;
+  int? _directFallbackRequestId;
   bool _currentTrackNeedsOpening = false;
   double _volume = 0.55;
   Timer? _startupRecoveryTimer;
@@ -407,7 +412,9 @@ class PlayerController extends ChangeNotifier {
     int requestId, {
     int? startupRecoveryAttemptsRemaining,
     bool startNewSession = true,
+    bool bypassStreamingCache = false,
   }) async {
+    _directFallbackRequestId = null;
     final recoveryAttemptsRemaining =
         startupRecoveryAttemptsRemaining ?? _startupRecoveryAttempts;
     final shouldSettleStartupSwitch =
@@ -468,8 +475,19 @@ class PlayerController extends ChangeNotifier {
       notifyListeners();
     }
 
+    final playbackUri = Uri.tryParse(track.streamUrl);
+    final useStreamingCacheProxy =
+        !bypassStreamingCache &&
+        playbackUri != null &&
+        (playbackUri.scheme == 'http' || playbackUri.scheme == 'https') &&
+        playbackTrack.streamingCacheFile != null;
     if (recoveryAttemptsRemaining >= 0) {
-      _armStartupRecovery(requestId, index, recoveryAttemptsRemaining);
+      _armStartupRecovery(
+        requestId,
+        index,
+        recoveryAttemptsRemaining,
+        bypassStreamingCache: bypassStreamingCache || useStreamingCacheProxy,
+      );
     }
     _openingPlaybackRequestId = requestId;
     try {
@@ -477,17 +495,17 @@ class PlayerController extends ChangeNotifier {
         if (!_shouldApplyPlaybackRequest(requestId, index)) {
           return;
         }
-        final uri = Uri.tryParse(track.streamUrl);
+        final uri = playbackUri;
         if (uri != null && uri.scheme == 'file') {
           _activePlaybackCacheFile = File(uri.toFilePath());
+          AppLogger.instance.info('player', '播放链路：本地完整缓存');
           await _audioPlayer.openAndPlay(uri.toString());
-        } else if (uri != null &&
-            (uri.scheme == 'http' || uri.scheme == 'https') &&
-            playbackTrack.streamingCacheFile != null) {
+        } else if (useStreamingCacheProxy) {
+          AppLogger.instance.info('player', '播放链路：缓存代理（边播边缓存）');
           final cacheFile = playbackTrack.streamingCacheFile!;
           final proxy =
               prefetchedPlayback?.proxy ??
-              StreamingAudioCacheProxy(uri, cacheFile: cacheFile);
+              StreamingAudioCacheProxy(playbackUri, cacheFile: cacheFile);
           final localUri = prefetchedPlayback?.localUri ?? await proxy.start();
           _watchStreamingCacheProgress(
             proxy,
@@ -498,7 +516,19 @@ class PlayerController extends ChangeNotifier {
           );
           await _audioPlayer.openAndPlay(localUri.toString());
         } else {
+          if (bypassStreamingCache &&
+              uri != null &&
+              (uri.scheme == 'http' || uri.scheme == 'https')) {
+            _directFallbackRequestId = requestId;
+            AppLogger.instance.info('player', '播放链路：原始音频流（直连，缓存代理停滞兜底）');
+          } else {
+            AppLogger.instance.info('player', '播放链路：原始音频流（直连）');
+          }
           await _audioPlayer.openAndPlay(track.streamUrl);
+          if (_directFallbackRequestId == requestId && _audioPlayer.playing) {
+            AppLogger.instance.info('player', '原始音频流已由播放器接收并开始播放');
+            _directFallbackRequestId = null;
+          }
         }
         if (!_shouldApplyPlaybackRequest(requestId, index)) {
           return;
@@ -515,7 +545,12 @@ class PlayerController extends ChangeNotifier {
         error: error,
         stackTrace: stackTrace,
       );
-      await _recoverStalledStartup(index, requestId, recoveryAttemptsRemaining);
+      await _recoverStalledStartup(
+        index,
+        requestId,
+        recoveryAttemptsRemaining,
+        bypassStreamingCache: bypassStreamingCache || useStreamingCacheProxy,
+      );
       return;
     } finally {
       if (_openingPlaybackRequestId == requestId) {
@@ -603,6 +638,7 @@ class PlayerController extends ChangeNotifier {
                 index,
                 requestId,
                 recoveryAttemptsRemaining,
+                bypassStreamingCache: true,
               ),
             );
           }),
@@ -623,7 +659,12 @@ class PlayerController extends ChangeNotifier {
         );
         if (_shouldApplyPlaybackRequest(requestId, index)) {
           unawaited(
-            _recoverStalledStartup(index, requestId, recoveryAttemptsRemaining),
+            _recoverStalledStartup(
+              index,
+              requestId,
+              recoveryAttemptsRemaining,
+              bypassStreamingCache: true,
+            ),
           );
         }
       }),
@@ -949,8 +990,9 @@ class PlayerController extends ChangeNotifier {
   void _armStartupRecovery(
     int requestId,
     int index,
-    int recoveryAttemptsRemaining,
-  ) {
+    int recoveryAttemptsRemaining, {
+    required bool bypassStreamingCache,
+  }) {
     _cancelStartupRecovery();
     if (_startupRecoveryTimeout <= Duration.zero) {
       return;
@@ -958,11 +1000,6 @@ class PlayerController extends ChangeNotifier {
     _startupRecoveryTimer = Timer(_startupRecoveryTimeout, () {
       _startupRecoveryTimer = null;
       if (!_shouldApplyPlaybackRequest(requestId, index)) {
-        return;
-      }
-      final streamingProxy = _streamingCacheProxy;
-      if (streamingProxy != null && streamingProxy.isDownloading) {
-        _armStartupRecovery(requestId, index, recoveryAttemptsRemaining);
         return;
       }
       final opening = _openingPlaybackRequestId == requestId;
@@ -975,7 +1012,12 @@ class PlayerController extends ChangeNotifier {
         return;
       }
       unawaited(
-        _recoverStalledStartup(index, requestId, recoveryAttemptsRemaining),
+        _recoverStalledStartup(
+          index,
+          requestId,
+          recoveryAttemptsRemaining,
+          bypassStreamingCache: bypassStreamingCache,
+        ),
       );
     });
   }
@@ -983,8 +1025,9 @@ class PlayerController extends ChangeNotifier {
   Future<void> _recoverStalledStartup(
     int index,
     int requestId,
-    int recoveryAttemptsRemaining,
-  ) async {
+    int recoveryAttemptsRemaining, {
+    required bool bypassStreamingCache,
+  }) async {
     if (!_shouldApplyPlaybackRequest(requestId, index)) {
       return;
     }
@@ -992,7 +1035,16 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     _startupRecoveryInFlightRequestId = requestId;
-    AppLogger.instance.warning('player', '播放启动停滞，正在重试当前歌曲');
+    final proxy = _streamingCacheProxy;
+    final proxyDownloadedBytes = proxy?.downloadedBytes;
+    AppLogger.instance.warning(
+      'player',
+      bypassStreamingCache && proxyDownloadedBytes != null
+          ? '缓存代理启动停滞（已接收 $proxyDownloadedBytes 字节），正在刷新地址并改用原始音频流'
+          : bypassStreamingCache
+          ? '原始音频流启动停滞，正在重试直连'
+          : '播放启动停滞，正在重试当前歌曲',
+    );
     try {
       final cacheFinished = (_streamingCacheProgress ?? 0) >= 1;
       final completedCacheFile = cacheFinished
@@ -1013,7 +1065,11 @@ class PlayerController extends ChangeNotifier {
         return;
       }
       if (recoveryAttemptsRemaining <= 0) {
-        await _failStalledStartup(index, requestId);
+        await _failStalledStartup(
+          index,
+          requestId,
+          directStreamAttempt: bypassStreamingCache,
+        );
         return;
       }
       final retryRequestId = ++_playRequestId;
@@ -1022,6 +1078,7 @@ class PlayerController extends ChangeNotifier {
         retryRequestId,
         startupRecoveryAttemptsRemaining: recoveryAttemptsRemaining - 1,
         startNewSession: false,
+        bypassStreamingCache: bypassStreamingCache,
       );
     } finally {
       if (_startupRecoveryInFlightRequestId == requestId) {
@@ -1030,7 +1087,11 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  Future<void> _failStalledStartup(int index, int requestId) async {
+  Future<void> _failStalledStartup(
+    int index,
+    int requestId, {
+    required bool directStreamAttempt,
+  }) async {
     if (!_shouldApplyPlaybackRequest(requestId, index)) {
       return;
     }
@@ -1043,8 +1104,14 @@ class PlayerController extends ChangeNotifier {
     await _stopAudioForTransition();
     await _clearStreamingCacheProgress(waitForProxy: false);
     _activePlaybackCacheFile = null;
+    _directFallbackRequestId = null;
     _currentTrackNeedsOpening = true;
-    AppLogger.instance.error('player', '播放启动多次失败，已停止缓冲，可手动重试当前歌曲');
+    AppLogger.instance.error(
+      'player',
+      directStreamAttempt
+          ? '原始音频流多次启动失败，服务端音频流当前不可播放'
+          : '播放启动多次失败，已停止缓冲，可手动重试当前歌曲',
+    );
     notifyListeners();
   }
 
@@ -1073,6 +1140,7 @@ class PlayerController extends ChangeNotifier {
         if (!_shouldApplyPlaybackRequest(retryRequestId, index)) {
           return;
         }
+        AppLogger.instance.info('player', '播放链路：本地完整缓存（代理下载完成）');
         await _audioPlayer.openAndPlay(Uri.file(cacheFile.path).toString());
       });
     } finally {

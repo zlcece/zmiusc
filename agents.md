@@ -33,7 +33,7 @@
 - 音乐页默认顺序为：搜索框；“每日推荐”与“我喜欢的 / 我的歌单 / 公开歌单 / 电台”快捷入口；最新专辑与随机专辑；最近播放与最多播放；我的歌单；公开歌单。手机端“每日推荐”独占一整行，其余入口保持每行两个；宽屏桌面/平板在空间允许时五个入口同排。设置页“首页布局”可单独显示/隐藏“每日推荐”，四个既有快捷入口和四个发现模块继续支持显示状态及 1-4 顺序，并可独立隐藏底部“我的歌单 / 公开歌单”板块；“快捷入口 / 专辑与播放 / 歌单”三组均有总开关，总开关关闭时批量关闭并折叠全部子项，开启时批量恢复全部子项；旧歌手/专辑首页板块不再展示。
 - “每日推荐”每天生成最多 30 首：直接收藏歌曲按收藏总数动态取样（少于 10 首取 1 首、10-29 首取 2 首、30 首以上取 4 首），再取 8 首收藏歌手相关歌曲、9 首最近/最多播放相关歌曲，剩余名额由随机探索补齐；直接收藏歌曲必须从其他候选池剔除，避免绕过动态配额。保存最近 7 天推荐历史，直接收藏歌曲 5 天内不重复、其他推荐 3 天内不重复；严格候选不足时按随机探索、收藏歌手相关、播放习惯、直接收藏的顺序补齐，仍不足才从最早日期开始逐步解除冷却。统一按“歌手+歌名”去重并按 FLAC > APE > MP3 保留一个版本，排除生成时播放队列已有歌曲并尽量避免同歌手连续。当天结果本地复用，“换一批”强制重新生成并合并进当天历史；详情页支持播放全部、刷新以及保存到已有个人歌单或创建新歌单，退出登录、切换账号或关闭入口会清除推荐缓存和历史。
 - 全平台所有开关使用统一的 80% 视觉缩放，文字和整行交互区域保持正常尺寸。
-- 检查更新固定读取 `https://file.zuitimes.com/zmusic/0/update.json`，不兼容旧 `/zmusic/update.json` 地址；当前正式发布清单按 `windows / android / android-dilink` 提供平台下载信息，macOS 客户端已支持读取可选的 `macos` 节点，正式发布 macOS 包时必须同步提供该节点。
+- 检查更新固定读取 `https://file.zuitimes.com/zmusic/0/update.json`，不兼容旧 `/zmusic/update.json` 地址；五端正式发布清单按 `windows / android / android-dilink / macos / ios` 提供平台下载信息。
 - 首页隐藏配置会参与启动、登录和全量刷新时的数据请求裁剪：“每日推荐”、收藏、电台和四个发现模块隐藏后不调用对应接口；Navidrome/Subsonic 的个人/公开歌单共用 `getPlaylists`，只有两个歌单快捷入口和两个底部歌单板块全部隐藏时才跳过该接口；账号区歌曲总数仍始终加载。
 - Navidrome/Subsonic 发现数据：我喜欢的使用 `getStarred2`，最近播放/最多播放/随机专辑使用 `getAlbumList2` 的 `recent` / `frequent` / `random` 类型。
 - 我的歌单列表提供外部歌单同步、歌单合并和批量添加歌曲；公共非本人歌单始终只读。外部同步当前支持网易云和 QQ 音乐公开歌单，通过标题+歌手严格匹配当前 Navidrome 曲库，去重后分批写入，不在客户端保存第三方同步管理账号。
@@ -59,12 +59,14 @@
 ## 播放与缓存行为
 
 - Android 通过系统 `MediaSession` 和媒体播放前台服务接收蓝牙耳机/有线耳机/车机方向盘的播放、暂停、组合播放暂停、上一首、下一首控制；前台 Activity 同时接收车机直接派发的媒体硬件键，应用退到后台且仍有当前曲目时保持媒体会话与播放通知。
+- DiLink 兼容构建启用低负载显示：Flutter 内存图片缓存最多保留 128 项、24 MB，手机底部播放栏封面保持静态；手机播放栏没有进度条时不得订阅播放位置并持续整行重建。普通 Android/iOS 仍保留播放封面旋转，平板和桌面端需要显示进度条的刷新不受影响。
 - iOS 最低支持 13.0，使用 `media_kit_libs_ios_audio` 提供原生音频库；`AVAudioSession` 使用 playback 类别并声明 `UIBackgroundModes=audio`，通过 `MPNowPlayingInfoCenter` / `MPRemoteCommandCenter` 发布曲目信息和播放状态，接收锁屏、耳机及系统控制中心的播放、暂停、上一首、下一首控制；来电等音频中断时暂停，系统允许恢复时继续播放，耳机拔出时暂停。
 
 - 播放模式共 4 种：顺序播放、随机播放、单曲循环、列表循环。
 - 顺序播放到最后一首后停止；列表循环才回到第一首。
 - 设置页“播放 → 随机播放”默认关闭；开启后仅当当前模式为顺序播放且队列正常播放到末尾时，从当前 Navidrome/Subsonic 服务获取 30 首随机歌曲替换队列并继续播放。随机接口失败或无数据时仍停在队列末尾，等待期间用户手动切歌、切换模式或更换账号后必须丢弃迟到结果；电台不触发该行为。
 - 网络音频使用边播边缓存；缓存完成后再次播放同一首应直接复用本地缓存。
+- 网络歌曲通过缓存代理启动后 20 秒仍未进入可播放状态时，当前歌曲必须取消代理并改用原始音频流；后续自动恢复保持直连，不得重新创建缓存代理形成分钟级重试循环。该兜底只影响本次播放，之后再次播放仍可正常尝试缓存。运行日志必须明确记录本地完整缓存、缓存代理（边播边缓存）、原始音频流直连及代理停滞兜底直连四类播放链路，不得记录鉴权 URL。
 - Navidrome/Subsonic 电台使用电台 `streamUrl` 直接串流播放；`.m3u` / `.pls` 会先解析出真实音频 URL；电台直播流不进入普通歌曲缓存。
 - 播放电台时队列为当前音源全部可播放电台频道；播放模式、收藏、拖动进度均禁用，进度两端固定显示 `00:00`，上一台/下一台和频道队列仍可用。
 - Windows 与 macOS 播放器每次启动的默认内部音量为 55%，并允许通过软件音量控件调整；Android、DiLink、iPhone 和 iPad 的内部音量统一为 100%，由系统媒体音量负责最终输出音量。
@@ -95,10 +97,10 @@
 ## 打包记忆
 
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
-- 用户说“打包”时，默认同时执行三件事：升级可见补丁版本和内部 build/versionCode、生成上述三个正式包、根据最终文件生成 `dist/update.json`。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.20+25`。
+- 用户说“打包”时，默认同时执行三件事：升级可见补丁版本和内部 build/versionCode、生成上述三个正式包、根据最终文件生成 `dist/update.json`。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.21+26`。
 - macOS 源码已补齐，但当前默认“打测试包/打包”仍只生成 Windows、Android 通用版和 Android DiLink 三个产物；macOS 构建、签名、公证及产物生成必须在安装 Xcode 与 CocoaPods 的 macOS 主机上单独执行，不能在当前 Windows 主机交叉编译。
 - GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
-- `update.json` 的 `updateContent` 必须按 `windows / android / android-dilink` 分平台整理：跨平台改动可以写入全部节点；Windows 安装器、托盘、音量条等 Windows 独有改动只写入 `windows`；Android 通知、MediaSession、手机/平板 UI 等 Android 共用改动只写入 `android` 和 `android-dilink`；DiLink 独有改动只写入 `android-dilink`。清单中的大小、MD5、SHA256 必须在三个最终包完成后重新计算。
+- `update.json` 的 `updateContent` 必须按 `windows / android / android-dilink / macos / ios` 分平台整理：跨平台改动可以写入全部节点；Windows 安装器、托盘、音量条等 Windows 独有改动只写入 `windows`；Android 通知、MediaSession、手机/平板 UI 等 Android 共用改动只写入 `android` 和 `android-dilink`；DiLink 独有改动只写入 `android-dilink`；macOS 与 iOS 独有改动只写入各自节点。清单中的大小、MD5、SHA256 必须基于实际发布并准备上传到文件服务器的最终包重新计算。
 - 普通 `flutter build windows --release` 在本机可能卡住 Visual Studio 生成器阶段。
 - 可用方式是复用 `build/windows/x64-ninja`：
   - `cmake --build build\windows\x64-ninja --config Release --target zmusic`
@@ -119,6 +121,20 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-08-17：准备正式发布 `1.0.21+26`。播放器运行日志新增播放链路标识，分别记录“本地完整缓存”“缓存代理（边播边缓存）”“原始音频流（直连）”和“原始音频流（缓存代理停滞兜底）”，代理下载完成后切回本地文件也会单独记录，日志不包含流 URL 或鉴权信息。本轮正式发布同时包含此前尚未提交的 DiLink 低负载显示、当前会话日志清理、缓存文件并发清理保护、缓存代理启动停滞改走原始流，以及桌面音量悬浮层生命周期修复。版本已同步为 `1.0.21+26`，GitHub Actions 五端工作流的产物名、iOS 校验和 Release 信息已更新。按正式打包规则未运行 `flutter analyze` 或测试；本地 Windows CMake/Ninja Release 与正式 NSIS 构建成功，runner ProductVersion/FileVersion 均为 `1.0.21+26`，安装器包含 24 个 payload 文件、payload 大小 `49,824,740` 字节；Android 通用版和 DiLink 均为 `versionName=1.0.21`、`versionCode=26`、最低 API 24，通用版 target 36，DiLink target 29。GitHub 五端发布产物、最终哈希和 `update.json` 信息待标签构建结束并重新下载后补充。
+
+- 2026-08-17：按“打测试包”规则保持版本 `1.0.20+25`，完成当前待发布改动的 Windows、Android 通用版和 Android DiLink 三端测试打包。除本日已记录的 DiLink 性能限制、当前会话日志清理、缓存删除竞态保护和播放停滞直连兜底外，本轮修复桌面音量悬浮层在父组件构建期间同步刷新 Overlay 导致的 Flutter build scope 断言，改为帧结束后仅刷新仍有效的 Overlay；同步校正更新测试对当前 Dart URI 空查询参数的错误假设、将远端更新夹具设为高于当前版本，并明确 Windows 55% 音量初始化平台。`flutter analyze --no-pub` 无问题，完整 `flutter test --no-pub` 160 项全部通过。Windows 首次未加载 VS 开发环境导致标准头文件缺失，随后通过 Visual Studio Developer PowerShell x64 环境完成 CMake/Ninja Release 与 `TEST_MODE` NSIS 构建；安装器包含 24 个 payload 文件、payload 大小 `49,824,740` 字节，runner ProductVersion/FileVersion 均为 `1.0.20+25`，临时 `nsis-payload` 已清理。检测到用户安装版 `D:\Programs\Zmusic\zmusic.exe`（PID 33900）正在运行且正常响应，为避免中断当前播放未执行独立 runner 烟测。Android 两包均为 `versionName=1.0.20`、`versionCode=25`、最低 API 24、389 个 ZIP 条目，仅含 `arm64-v8a` / `armeabi-v7a` 和压缩 JNI 原生库，不含 x86/x86_64 或 `just_audio` 并通过 16 KB zipalign；通用版 target 36/V2，DiLink 使用 Android Studio JBR 21 和显式 `-PzmusicDiLinkCompatibility=true --no-daemon` 构建为 target 29/V1-only，两包签名证书 SHA256 均为 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。最终测试包：`dist/zmusic-windows-x64.exe` 大小 `16,659,483` 字节、MD5 `C2BEB59CFA58B8CD0BF7D1DC2AC1544F`、SHA256 `08C15CFD2DAD21595775297DA0100EF39731AEC6965BFD1C721459BDE5388D08`；`dist/zmusic-android.apk` 大小 `23,975,231` 字节、MD5 `B483EAE4233C78A4C0BF3911B653F2DE`、SHA256 `E7B8C2DF3042D678C2682C8B5F7A336D4EC5B90660B48333E3B410499FAFC7D9`；`dist/zmusic-android-dilink.apk` 大小 `24,515,128` 字节、MD5 `95058EA31795B815C30250A8ECF24E5F`、SHA256 `FBB1770FC8BF6C9D1A0E3F6AA39D0001A81F2D8703FE3B1FC846988BAB00F695`。未生成或覆盖更新清单，`dist/update.json` SHA256 保持 `326EA57D1D66959E2F5C7006FB3E422DFFF9056EFB4360D18FAF1B723586098F` 不变。
+
+- 2026-08-17：根据用户提供的完整运行日志修复大量歌曲长时间缓冲、几乎无法播放的问题。日志显示缓存代理的源站请求连续 30 秒超时，而启动恢复只要看到代理仍处于下载状态就不断延后；代理最终失败后每次恢复又重新创建相同缓存代理，导致单首歌曲以分钟为单位重复失败。播放器启动窗口调整为 20 秒，缓存代理在窗口内仍未进入可播放状态时取消当前代理并改走原始音频流，后续有界恢复继续保持直连，不再返回缓存循环；缓存完整时仍优先恢复为本地文件，后续重新播放也仍会正常尝试边播边缓存。代理暴露实际下载字节数，恢复日志现在区分代理收到的字节数、重新生成 Navidrome 流地址并提交 libmpv 直连、直连已开始播放以及直连最终失败，后续可以明确判断代理异常和服务端流不可用。同步扩大 `isCompletedAudioCacheFile` 的文件系统竞态保护，并在完成缓存校验后文件被并发清理时退回未缓存路径，避免旧缓存删除竞态中断自动切歌。仅执行 Dart 格式化和差异检查，按普通功能修改规则未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.20+25`。
+
+- 2026-08-17：降低 DiLink 长时间前台播放时的持续 CPU/GPU 与图片内存占用。启动时通过现有 Android 更新通道识别 DiLink 兼容构建，仅对该构建把 Flutter 内存图片缓存限制为最多 128 项、24 MB，并停止手机底部播放栏封面的持续旋转；普通 Android、iOS、Windows 和 macOS 视觉效果不变。同时修复手机底部播放栏未显示进度条却仍订阅播放位置、随位置事件反复整行重建的问题，手机端改为只在播放状态或曲目信息变化时重建，平板和桌面端需要进度条的刷新逻辑保持不变。仅执行 Dart 格式化和差异检查，按普通功能修改规则未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.20+25`。
+
+- 2026-08-17：日志改为只保留当前应用进程的运行记录。`AppLogger.initialize` 在每次启动时等待已有写任务结束，随后删除当前日志及全部轮转日志并清空内存日志；文件暂时无法删除时尝试截断，清理失败也不会阻止应用启动。运行期间继续沿用现有日志级别、内存上限和文件轮转，查看、导出、手动清理行为不变；未运行测试或 `flutter analyze`、未打包，版本保持 `1.0.20+25`。
+
+- 2026-08-17：发现 GitHub Actions 五端 Release 中的 Windows 与两个 Android 产物和 2026-08-15 本机产物字节不同，为避免用户上传 GitHub Release 文件后 `update.json` 校验失败，将 `dist` 中五个安装包全部替换为 GitHub `v1.0.20` 最终产物并统一更新清单。GitHub Windows 文件大小 `16,660,684` 字节、MD5 `9D908537E002A069846239AF1208F69C`、SHA256 `ED073C7333CC63B9158CF5996E5BD4337B244EF5027B85FC0ED505684ACCCF0F`；Android 通用版大小 `23,965,664` 字节、MD5 `839441D10A270B4CB8EB9AB39F033DA4`、SHA256 `D0C940639741DF7C7683D7E54F0CF794CE8D164EF869AEA3AF85150DB42E4A0A`；DiLink 大小 `23,957,443` 字节、MD5 `D42D8F02FD55CA415A833DB47B423C5D`、SHA256 `1CECAF13C510213365EACB68BE1DBE0A6308A898A6555B95B46F0DA7C51E450B`。五个平台节点均指向文件服务器 `1.0.20` 目录并使用对应 SHA256 前缀版本指纹；未修改应用代码、未运行测试或 `flutter analyze`、未重新打包，版本保持 `1.0.20+25`。
+
+- 2026-08-17：为 `1.0.20+25` 的 `dist/update.json` 补充 `macos` 和 `ios` 平台节点。从 GitHub Release `v1.0.20` 下载对应最终产物后计算实际文件信息：`zmusic-macos.dmg` 大小 `32,907,719` 字节、MD5 `58B398E8D0CD16C0D817E8C2C77F39D7`、SHA256 `C9D583247F86943160A4362247CD49ADADF0E8764DA15D4A2CB5EC5C02E54C84`；`zmusic-ios-unsigned.ipa` 大小 `11,071,825` 字节、MD5 `7E0C81C35E69E6D4B3200C5709A0A97C`、SHA256 `DE816383CF9A0F399C0FCF3AEEAA922B3ABC7399E8A68E175E3E72784D9BAA78`。两个节点均使用文件服务器 `1.0.20` 目录和 SHA256 前缀版本指纹，清单现包含五个平台；未修改应用代码、未运行测试或 `flutter analyze`、未重新打包，版本保持 `1.0.20+25`。
 
 - 2026-08-17：将 `1.0.20+25` 源码提交到 GitHub，发布源码提交为 `b933c03`（`Release Zmusic 1.0.20`），推送 `main` 和带注释标签 `v1.0.20`，触发 GitHub Actions `Build five-platform release`（run `31989945793`）。Windows installer、Android APK、Android DiLink APK、macOS DMG、iOS unsigned IPA 及最终 `Publish GitHub release` 六个任务全部成功；GitHub Release 地址为 `https://github.com/zlcece/zmiusc/releases/tag/v1.0.20`。Release 已确认包含 5 个产物：`zmusic-windows-x64.exe`（`16,660,684` 字节）、`zmusic-android.apk`（`23,965,664` 字节）、`zmusic-android-dilink.apk`（`23,957,443` 字节）、`zmusic-macos.dmg`（`32,907,719` 字节）和 `zmusic-ios-unsigned.ipa`（`11,071,825` 字节）。版本保持 `1.0.20+25`，本轮未再次修改发布标签或升版。
 

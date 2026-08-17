@@ -9,6 +9,7 @@ import 'package:media_kit/media_kit.dart' as media_kit;
 import 'src/app.dart';
 import 'src/app_controller.dart';
 import 'src/app_logger.dart';
+import 'src/app_update.dart';
 import 'src/desktop_integration.dart';
 import 'src/library_store.dart';
 import 'src/player_controller.dart';
@@ -55,6 +56,16 @@ Future<void> _bootstrap() async {
   AppLogger.instance.info('app', 'Zmusic 开始启动');
   media_kit.MediaKit.ensureInitialized();
 
+  final isDiLinkCompatibilityBuild =
+      Platform.isAndroid &&
+      await resolveAppUpdatePlatformKey() == 'android-dilink';
+  if (isDiLinkCompatibilityBuild) {
+    final imageCache = PaintingBinding.instance.imageCache;
+    imageCache
+      ..maximumSize = 128
+      ..maximumSizeBytes = 24 * 1024 * 1024;
+  }
+
   final controller = AppController(
     store: LibraryStore(),
     player: PlayerController(),
@@ -65,7 +76,12 @@ Future<void> _bootstrap() async {
       (call) => _handleDesktopFileDrop(controller, call),
     );
   }
-  runApp(ZmusicApp(controller: controller));
+  runApp(
+    ZmusicApp(
+      controller: controller,
+      isDiLinkCompatibilityBuild: isDiLinkCompatibilityBuild,
+    ),
+  );
   if (Platform.isMacOS) {
     unawaited(_notifyMacOSFileDropReady());
   }

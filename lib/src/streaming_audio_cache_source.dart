@@ -54,6 +54,8 @@ class StreamingAudioCacheProxy {
       _downloadError == null &&
       !_canceled;
 
+  int get downloadedBytes => _downloadedBytes;
+
   Future<Uri> start() async {
     if (_server != null) {
       return localUri;

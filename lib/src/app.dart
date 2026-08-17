@@ -29,9 +29,14 @@ const double _mobilePlayerVolume = 1;
 const MethodChannel _androidTaskChannel = MethodChannel('com.zmusic.app/task');
 
 class ZmusicApp extends StatefulWidget {
-  const ZmusicApp({required this.controller, super.key});
+  const ZmusicApp({
+    required this.controller,
+    this.isDiLinkCompatibilityBuild = false,
+    super.key,
+  });
 
   final AppController controller;
+  final bool isDiLinkCompatibilityBuild;
 
   @override
   State<ZmusicApp> createState() => _ZmusicAppState();
@@ -55,7 +60,10 @@ class _ZmusicAppState extends State<ZmusicApp> {
           themeMode: widget.controller.themeMode,
           theme: _theme(Brightness.light),
           darkTheme: _theme(Brightness.dark),
-          home: HomePage(controller: widget.controller),
+          home: HomePage(
+            controller: widget.controller,
+            isDiLinkCompatibilityBuild: widget.isDiLinkCompatibilityBuild,
+          ),
         );
       },
     );
@@ -91,9 +99,14 @@ ThemeData _theme(Brightness brightness) {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({required this.controller, super.key});
+  const HomePage({
+    required this.controller,
+    this.isDiLinkCompatibilityBuild = false,
+    super.key,
+  });
 
   final AppController controller;
+  final bool isDiLinkCompatibilityBuild;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -486,6 +499,8 @@ class _HomePageState extends State<HomePage> {
                         if (!hideBottomPlayer)
                           _PlayerBar(
                             controller: widget.controller,
+                            reduceArtworkMotion:
+                                widget.isDiLinkCompatibilityBuild,
                             onArtworkTap: currentTrack == null
                                 ? null
                                 : () => setState(() => _showNowPlaying = true),
@@ -8628,6 +8643,7 @@ Future<void> _showQueueSheet(BuildContext context, AppController controller) {
 class _PlayerBar extends StatelessWidget {
   const _PlayerBar({
     required this.controller,
+    required this.reduceArtworkMotion,
     required this.onArtworkTap,
     required this.volume,
     required this.onVolumeChanged,
@@ -8635,6 +8651,7 @@ class _PlayerBar extends StatelessWidget {
   });
 
   final AppController controller;
+  final bool reduceArtworkMotion;
   final VoidCallback? onArtworkTap;
   final double volume;
   final ValueChanged<double> onVolumeChanged;
@@ -8665,6 +8682,8 @@ class _PlayerBar extends StatelessWidget {
               : const EdgeInsets.fromLTRB(16, 10, 16, 12),
           child: track == null
               ? const SizedBox(height: 56, child: Center(child: Text('暂无播放内容')))
+              : isPhoneShell
+              ? _mobileMiniPlayer(context)
               : StreamBuilder<Duration>(
                   stream: player.positionStream,
                   initialData: player.position,
@@ -8673,12 +8692,8 @@ class _PlayerBar extends StatelessWidget {
                       builder: (context, constraints) {
                         final position = snapshot.data ?? Duration.zero;
                         final isWide = constraints.maxWidth >= 1040;
-                        final isPhone =
-                            constraints.maxWidth < _mobilePlayerWidthBreakpoint;
                         return isWide
                             ? _widePlayer(context, position)
-                            : isPhone
-                            ? _mobileMiniPlayer(context, position)
                             : _narrowPlayer(context, position);
                       },
                     );
@@ -8749,7 +8764,7 @@ class _PlayerBar extends StatelessWidget {
     );
   }
 
-  Widget _mobileMiniPlayer(BuildContext context, Duration _) {
+  Widget _mobileMiniPlayer(BuildContext context) {
     final track = controller.player.currentTrack!;
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -8779,6 +8794,7 @@ class _PlayerBar extends StatelessWidget {
                     _RotatingMiniArtwork(
                       track: track,
                       playing: controller.player.isPlaying,
+                      animate: !reduceArtworkMotion,
                       size: 40,
                     ),
                     const SizedBox(width: 9),
@@ -8849,11 +8865,13 @@ class _RotatingMiniArtwork extends StatefulWidget {
   const _RotatingMiniArtwork({
     required this.track,
     required this.playing,
+    required this.animate,
     required this.size,
   });
 
   final Track track;
   final bool playing;
+  final bool animate;
   final double size;
 
   @override
@@ -8876,7 +8894,8 @@ class _RotatingMiniArtworkState extends State<_RotatingMiniArtwork>
   @override
   void didUpdateWidget(covariant _RotatingMiniArtwork oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.playing != widget.playing) {
+    if (oldWidget.playing != widget.playing ||
+        oldWidget.animate != widget.animate) {
       _syncAnimation();
     }
   }
@@ -8888,7 +8907,7 @@ class _RotatingMiniArtworkState extends State<_RotatingMiniArtwork>
   }
 
   void _syncAnimation() {
-    if (widget.playing) {
+    if (widget.playing && widget.animate) {
       _controller.repeat();
     } else {
       _controller.stop(canceled: false);
@@ -9123,7 +9142,15 @@ class _VolumeControlState extends State<_VolumeControl> {
   @override
   void didUpdateWidget(covariant _VolumeControl oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _overlayEntry?.markNeedsBuild();
+    final overlayEntry = _overlayEntry;
+    if (overlayEntry == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && identical(_overlayEntry, overlayEntry)) {
+        overlayEntry.markNeedsBuild();
+      }
+    });
   }
 
   @override
