@@ -85,6 +85,16 @@ jobs:
           cache: true
       - name: Install dependencies
         run: flutter pub get
+      - name: Configure Android signing
+        env:
+          ZMUSIC_ANDROID_KEYSTORE_BASE64: ${{ secrets.ZMUSIC_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ZMUSIC_ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ZMUSIC_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/zmusic-release.keystore"
+          echo "ZMUSIC_ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/zmusic-release.keystore" >> "$GITHUB_ENV"
+          echo "ZMUSIC_ANDROID_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
+          echo "ZMUSIC_ANDROID_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
+          echo "ZMUSIC_ANDROID_KEY_PASSWORD=android" >> "$GITHUB_ENV"
       - name: Build Android release
         run: |
           chmod +x android/gradlew
@@ -131,6 +141,16 @@ jobs:
           cache: true
       - name: Install dependencies
         run: flutter pub get
+      - name: Configure Android signing
+        env:
+          ZMUSIC_ANDROID_KEYSTORE_BASE64: ${{ secrets.ZMUSIC_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ZMUSIC_ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ZMUSIC_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/zmusic-release.keystore"
+          echo "ZMUSIC_ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/zmusic-release.keystore" >> "$GITHUB_ENV"
+          echo "ZMUSIC_ANDROID_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
+          echo "ZMUSIC_ANDROID_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
+          echo "ZMUSIC_ANDROID_KEY_PASSWORD=android" >> "$GITHUB_ENV"
       - name: Build Android DiLink release
         run: |
           chmod +x android/gradlew

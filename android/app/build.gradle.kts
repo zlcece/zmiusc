@@ -6,6 +6,8 @@ plugins {
 
 val isDiLinkCompatibilityBuild =
     providers.gradleProperty("zmusicDiLinkCompatibility").orNull == "true"
+val releaseKeystorePath =
+    providers.environmentVariable("ZMUSIC_ANDROID_KEYSTORE_PATH").orNull
 
 android {
     namespace = "com.zmusic.app"
@@ -41,6 +43,18 @@ android {
 
     signingConfigs {
         getByName("debug") {
+            if (!releaseKeystorePath.isNullOrBlank()) {
+                storeFile = file(releaseKeystorePath)
+                storePassword = providers.environmentVariable(
+                    "ZMUSIC_ANDROID_KEYSTORE_PASSWORD",
+                ).orNull
+                keyAlias = providers.environmentVariable(
+                    "ZMUSIC_ANDROID_KEY_ALIAS",
+                ).orNull
+                keyPassword = providers.environmentVariable(
+                    "ZMUSIC_ANDROID_KEY_PASSWORD",
+                ).orNull
+            }
             enableV1Signing = true
             enableV2Signing = !isDiLinkCompatibilityBuild
         }
@@ -48,8 +62,7 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // CI injects the stable keystore; local builds retain the existing debug key.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
