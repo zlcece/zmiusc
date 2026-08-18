@@ -4405,10 +4405,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.22',
-                  'versionCode': 122,
+                  'latestVersion': '1.0.23',
+                  'versionCode': 123,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.0.22/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.0.23/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4436,7 +4436,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.0.22'), findsOneWidget);
+    expect(find.text('发现新版本 1.0.23'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4448,7 +4448,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.0.22/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.0.23/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4473,8 +4473,8 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.0.22',
-                  'versionCode': 122,
+                  'latestVersion': '1.0.23',
+                  'versionCode': 123,
                   'downloadUrl': downloadUri.toString(),
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
@@ -4511,7 +4511,7 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.0.22'));
+    expect(visibleText, contains('发现新版本 1.0.23'));
     expect(find.text('当前版本：1.0.22'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
