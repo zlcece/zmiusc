@@ -99,7 +99,7 @@
 ## 打包记忆
 
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
-- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.22+27`。
+- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.0+27`。
 - 正式发布必须等待 GitHub Actions 的 Windows、Android 通用版、Android DiLink、macOS、iOS 以及最终 Release 任务全部成功；随后从该 GitHub Release 下载五个最终资产到本地 `dist`，以下载后的真实文件验证版本、Android 证书/ABI/签名、文件大小和哈希。只有实物验证通过后，才根据这五个下载文件重新生成 `dist/update.json`；禁止根据构建前文件、本机文件或 Actions 临时产物预填最终大小和哈希。
 - macOS 源码已补齐；“打测试包”仍只在当前 Windows 主机生成 Windows、Android 通用版和 Android DiLink 三个产物，macOS/iOS 不做本地交叉编译。“打包/打正式包”则由 GitHub Actions 的 macOS runner 生成 macOS 和 iOS 产物，共同组成五端正式 Release。
 - GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
@@ -126,7 +126,7 @@
 
 ## 变更记录
 
-- 2026-08-18：准备发布 `1.0.22+27` 五端正式包。版本已同步到 Flutter、测试默认 `PackageInfo` 和 GitHub Actions 五端 artifact/iOS 断言/Release 描述；本次发布包含播放失败自动切歌、默认/GitHub 双下载通道、Android/DiLink 应用内更新下载与系统安装确认、SHA256 单哈希校验、已下载安装包复用和安装成功后缓存清理。正式发布前 `flutter analyze --no-pub` 已通过；首次完整测试因更新检查夹具与本地版本同为 `1.0.22` 导致 2 项断言失败，将模拟远端版本修正为 `1.0.23` 后重新执行完整测试，160 项全部通过。验证通过后才会推送 `v1.0.22`；GitHub 五端 Release 完成后将下载最终资产、实物校验并生成 `dist/update.json`。
+- 2026-08-18：准备发布 `1.1.0+27` 五端正式包。由于本次将更新校验从 MD5 切换为 SHA256，并加入双下载通道与 Android/DiLink 应用内更新，按功能级变更从原计划 `1.0.22` 调整为 `1.1.0`，内部构建号保持 `27`；已撤下误生成的 GitHub `v1.0.22` Release 和标签。版本已同步到 Flutter、测试默认 `PackageInfo` 和 GitHub Actions 五端 artifact/iOS 断言/Release 描述；本次发布还包含播放失败自动切歌、已下载安装包复用和安装成功后缓存清理。首次完整测试因更新检查夹具与本地版本相同导致 2 项断言失败，模拟远端版本改为高于本地的版本后通过；版本调整为 `1.1.0` 后重新执行 `flutter analyze --no-pub` 无问题，完整 `flutter test --no-pub` 160 项全部通过。验证通过后将推送 `v1.1.0`；GitHub 五端 Release 完成后下载最终资产、实物校验并生成 `dist/update.json`。
 
 - 2026-08-18：正式打包流程改为 GitHub 五端发布。后续“打包/打正式包”先升版并整理分平台更新内容，再提交推送代码和 `v*` 标签，由 GitHub Actions 生成 Windows、Android、Android DiLink、macOS、iOS 五端 Release；全部任务成功后必须重新下载五个最终 Release 资产到本地 `dist`，完成版本、签名、证书、ABI、大小和哈希实物校验，最后才据此更新 `dist/update.json`。本地三端构建仅保留给“打测试包”。本次只修改协作规则，未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.21+26`。
 
