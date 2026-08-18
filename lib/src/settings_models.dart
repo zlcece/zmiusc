@@ -45,6 +45,7 @@ class AppSettings {
     this.closeButtonBehavior = CloseButtonBehavior.exit,
     this.launchAtStartup = false,
     this.playRandomAfterSequentialQueue = false,
+    this.skipUnplayableTracks = true,
     this.showDailyRecommendation = true,
     this.homeShortcutOrder = defaultHomeShortcutOrder,
     this.hiddenHomeShortcuts = const <HomeShortcutSection>{},
@@ -64,6 +65,7 @@ class AppSettings {
   final CloseButtonBehavior closeButtonBehavior;
   final bool launchAtStartup;
   final bool playRandomAfterSequentialQueue;
+  final bool skipUnplayableTracks;
   final bool showDailyRecommendation;
   final List<HomeShortcutSection> homeShortcutOrder;
   final Set<HomeShortcutSection> hiddenHomeShortcuts;
@@ -128,6 +130,7 @@ class AppSettings {
     CloseButtonBehavior? closeButtonBehavior,
     bool? launchAtStartup,
     bool? playRandomAfterSequentialQueue,
+    bool? skipUnplayableTracks,
     bool? showDailyRecommendation,
     List<HomeShortcutSection>? homeShortcutOrder,
     Set<HomeShortcutSection>? hiddenHomeShortcuts,
@@ -148,6 +151,7 @@ class AppSettings {
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
       playRandomAfterSequentialQueue:
           playRandomAfterSequentialQueue ?? this.playRandomAfterSequentialQueue,
+      skipUnplayableTracks: skipUnplayableTracks ?? this.skipUnplayableTracks,
       showDailyRecommendation:
           showDailyRecommendation ?? this.showDailyRecommendation,
       homeShortcutOrder: homeShortcutOrder ?? this.homeShortcutOrder,
@@ -175,6 +179,7 @@ class AppSettings {
       'closeButtonBehavior': closeButtonBehavior.name,
       'launchAtStartup': launchAtStartup,
       'playRandomAfterSequentialQueue': playRandomAfterSequentialQueue,
+      'skipUnplayableTracks': skipUnplayableTracks,
       'showDailyRecommendation': showDailyRecommendation,
       'homeShortcutOrder': homeShortcutOrder
           .map((section) => section.name)
@@ -217,6 +222,11 @@ class AppSettings {
         json,
         'playRandomAfterSequentialQueue',
         fallback: false,
+      ),
+      skipUnplayableTracks: _readBool(
+        json,
+        'skipUnplayableTracks',
+        fallback: true,
       ),
       showDailyRecommendation: _readBool(
         json,

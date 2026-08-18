@@ -97,6 +97,7 @@ class PlayerController extends ChangeNotifier {
   int? _openingPlaybackRequestId;
   int? _directFallbackRequestId;
   bool _currentTrackNeedsOpening = false;
+  bool _skipUnplayableTracks = true;
   double _volume = 0.55;
   Timer? _startupRecoveryTimer;
   Future<void> _audioOperation = Future.value();
@@ -276,6 +277,10 @@ class PlayerController extends ChangeNotifier {
     );
     _notifyPlaybackSessionChanged();
     notifyListeners();
+  }
+
+  void setSkipUnplayableTracks(bool value) {
+    _skipUnplayableTracks = value;
   }
 
   Future<void> togglePlay() async {
@@ -1113,6 +1118,10 @@ class PlayerController extends ChangeNotifier {
           : '播放启动多次失败，已停止缓冲，可手动重试当前歌曲',
     );
     notifyListeners();
+    if (directStreamAttempt && _skipUnplayableTracks && canSkipNext) {
+      AppLogger.instance.warning('player', '当前歌曲不可播放，正在自动切换下一首');
+      await playNext();
+    }
   }
 
   Future<void> _recoverFromCompletedCache(

@@ -44,6 +44,32 @@ class ZmusicApp extends StatefulWidget {
 
 class _ZmusicAppState extends State<ZmusicApp> {
   @override
+  void initState() {
+    super.initState();
+    unawaited(_cleanupInstalledUpdate());
+  }
+
+  Future<void> _cleanupInstalledUpdate() async {
+    if (defaultTargetPlatform != TargetPlatform.windows &&
+        defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      await widget.controller.updateService.cleanupInstalledUpdate(
+        installedVersionCode: int.tryParse(packageInfo.buildNumber) ?? 0,
+      );
+    } catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'update',
+        '清理已安装更新包失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  @override
   void dispose() {
     widget.controller.dispose();
     super.dispose();
@@ -2061,6 +2087,17 @@ class _SettingsPageState extends State<_SettingsPage> {
                             ),
                           ),
                         ),
+                        CompactSwitchListTile(
+                          key: const ValueKey('skip-unplayable-tracks'),
+                          title: const Text('播放失败自动切歌'),
+                          subtitle: const Text('原始音频流多次启动失败后，自动播放下一首'),
+                          value: _settings.skipUnplayableTracks,
+                          onChanged: (value) => unawaited(
+                            _saveSettings(
+                              _settings.copyWith(skipUnplayableTracks: value),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                     _SettingsSection(
@@ -2906,6 +2943,7 @@ Future<void> _showAppUpdateDialog({
   required AppUpdateInfo update,
 }) {
   var downloading = false;
+  var downloadChannel = AppUpdateDownloadChannel.defaultChannel;
   AppUpdateDownloadProgress? progress;
   String? downloadError;
   return showDialog<void>(
@@ -2938,6 +2976,36 @@ Future<void> _showAppUpdateDialog({
                         padding: const EdgeInsets.only(bottom: 4),
                         child: Text('• $item'),
                       ),
+                  ],
+                  if (update.githubDownloadUri != null) ...[
+                    const SizedBox(height: 14),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        const Text('下载通道'),
+                        SegmentedButton<AppUpdateDownloadChannel>(
+                          showSelectedIcon: false,
+                          segments: const [
+                            ButtonSegment(
+                              value: AppUpdateDownloadChannel.defaultChannel,
+                              label: Text('默认通道'),
+                            ),
+                            ButtonSegment(
+                              value: AppUpdateDownloadChannel.github,
+                              label: Text('GitHub 通道'),
+                            ),
+                          ],
+                          selected: {downloadChannel},
+                          onSelectionChanged: downloading
+                              ? null
+                              : (selection) => setDialogState(
+                                  () => downloadChannel = selection.single,
+                                ),
+                        ),
+                      ],
+                    ),
                   ],
                   if (downloading) ...[
                     const SizedBox(height: 16),
@@ -2974,6 +3042,7 @@ Future<void> _showAppUpdateDialog({
                         dialogContext: dialogContext,
                         controller: controller,
                         update: update,
+                        downloadChannel: downloadChannel,
                         setDialogState: setDialogState,
                         onProgress: (value) => progress = value,
                         setDownloading: (value) => downloading = value,
@@ -2995,16 +3064,18 @@ Future<void> _openAppUpdateDownload({
   required BuildContext dialogContext,
   required AppController controller,
   required AppUpdateInfo update,
+  required AppUpdateDownloadChannel downloadChannel,
   required StateSetter setDialogState,
   required ValueChanged<AppUpdateDownloadProgress> onProgress,
   required ValueChanged<bool> setDownloading,
   required ValueChanged<String?> setError,
 }) async {
-  if (defaultTargetPlatform != TargetPlatform.windows) {
+  if (defaultTargetPlatform != TargetPlatform.windows &&
+      defaultTargetPlatform != TargetPlatform.android) {
     await _openAppUpdateDownloadInBrowser(
       pageContext,
       dialogContext,
-      update.downloadUri,
+      update.downloadUriFor(downloadChannel),
     );
     return;
   }
@@ -3019,12 +3090,23 @@ Future<void> _openAppUpdateDownload({
   try {
     final installer = await controller.updateService.downloadUpdate(
       update,
+      channel: downloadChannel,
       onProgress: (value) {
         if (dialogContext.mounted) {
           setDialogState(() => onProgress(value));
         }
       },
     );
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      await openAndroidUpdateInstaller(installer);
+      if (dialogContext.mounted) {
+        Navigator.of(dialogContext).pop();
+      }
+      if (pageContext.mounted) {
+        _showSourceMessage(pageContext, '更新包已下载，已打开系统安装程序。');
+      }
+      return;
+    }
     await Process.start(
       installer.path,
       const [],

@@ -68,6 +68,7 @@ class AppController extends ChangeNotifier {
     player.sequentialQueueCompletionProvider =
         _loadRandomQueueAfterSequentialCompletion;
     player.onPlaybackSessionChanged = _handlePlaybackSessionChanged;
+    player.setSkipUnplayableTracks(settings.skipUnplayableTracks);
   }
 
   final LibraryStore store;
@@ -202,6 +203,7 @@ class AppController extends ChangeNotifier {
     customTracks = await store.loadCustomTracks();
     settings = (await store.loadSettings()).normalized;
     AppLogger.instance.setLevel(settings.logLevel);
+    player.setSkipUnplayableTracks(settings.skipUnplayableTracks);
     if (settings.cacheDirectory.isEmpty) {
       settings = settings.copyWith(
         cacheDirectory: await cacheManager.defaultCacheDirectory(),
@@ -390,6 +392,7 @@ class AppController extends ChangeNotifier {
     final previousSettings = settings;
     settings = value.normalized;
     AppLogger.instance.setLevel(settings.logLevel);
+    player.setSkipUnplayableTracks(settings.skipUnplayableTracks);
     final shouldReloadHomeOverview = _shouldReloadHomeOverviewForSettings(
       previousSettings,
       settings,

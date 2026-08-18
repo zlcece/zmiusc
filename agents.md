@@ -33,7 +33,8 @@
 - 音乐页默认顺序为：搜索框；“每日推荐”与“我喜欢的 / 我的歌单 / 公开歌单 / 电台”快捷入口；最新专辑与随机专辑；最近播放与最多播放；我的歌单；公开歌单。手机端“每日推荐”独占一整行，其余入口保持每行两个；宽屏桌面/平板在空间允许时五个入口同排。设置页“首页布局”可单独显示/隐藏“每日推荐”，四个既有快捷入口和四个发现模块继续支持显示状态及 1-4 顺序，并可独立隐藏底部“我的歌单 / 公开歌单”板块；“快捷入口 / 专辑与播放 / 歌单”三组均有总开关，总开关关闭时批量关闭并折叠全部子项，开启时批量恢复全部子项；旧歌手/专辑首页板块不再展示。
 - “每日推荐”每天生成最多 30 首：直接收藏歌曲按收藏总数动态取样（少于 10 首取 1 首、10-29 首取 2 首、30 首以上取 4 首），再取 8 首收藏歌手相关歌曲、9 首最近/最多播放相关歌曲，剩余名额由随机探索补齐；直接收藏歌曲必须从其他候选池剔除，避免绕过动态配额。保存最近 7 天推荐历史，直接收藏歌曲 5 天内不重复、其他推荐 3 天内不重复；严格候选不足时按随机探索、收藏歌手相关、播放习惯、直接收藏的顺序补齐，仍不足才从最早日期开始逐步解除冷却。统一按“歌手+歌名”去重并按 FLAC > APE > MP3 保留一个版本，排除生成时播放队列已有歌曲并尽量避免同歌手连续。当天结果本地复用，“换一批”强制重新生成并合并进当天历史；详情页支持播放全部、刷新以及保存到已有个人歌单或创建新歌单，退出登录、切换账号或关闭入口会清除推荐缓存和历史。
 - 全平台所有开关使用统一的 80% 视觉缩放，文字和整行交互区域保持正常尺寸。
-- 检查更新固定读取 `https://file.zuitimes.com/zmusic/0/update.json`，不兼容旧 `/zmusic/update.json` 地址；五端正式发布清单按 `windows / android / android-dilink / macos / ios` 提供平台下载信息。
+- 检查更新固定读取 `https://file.zuitimes.com/zmusic/0/update.json`，不兼容旧 `/zmusic/update.json` 地址；五端正式发布清单按 `windows / android / android-dilink / macos / ios` 提供平台下载信息。每个平台节点同时提供 `downloadUrl` 默认通道和 `githubDownloadUrl` GitHub 通道，更新弹窗默认选择现有文件服务器，用户可手动切换 GitHub；两条地址下载后只校验同一个 SHA256，不再读取或计算 MD5。
+- Android 通用版与 DiLink 的应用更新必须在 Zmusic 内下载并显示进度，下载后完成 SHA256 校验，再通过 `FileProvider` 打开系统 APK 安装确认；不得再跳浏览器下载。缓存目录已有 SHA256 一致的目标包时直接复用并打开安装器，哈希不一致才删除并重新下载；下载后记录目标 `versionCode`，Windows/Android 新版本首次启动确认已经安装后删除安装包和更新记录，用户取消安装则继续保留。Android 8 及以上首次使用时先引导用户授予“安装未知应用”权限，返回后继续打开安装器；用户可以取消安装，普通应用不做静默覆盖。macOS 与 iOS 暂时继续使用外部下载地址。
 - 首页隐藏配置会参与启动、登录和全量刷新时的数据请求裁剪：“每日推荐”、收藏、电台和四个发现模块隐藏后不调用对应接口；Navidrome/Subsonic 的个人/公开歌单共用 `getPlaylists`，只有两个歌单快捷入口和两个底部歌单板块全部隐藏时才跳过该接口；账号区歌曲总数仍始终加载。
 - Navidrome/Subsonic 发现数据：我喜欢的使用 `getStarred2`，最近播放/最多播放/随机专辑使用 `getAlbumList2` 的 `recent` / `frequent` / `random` 类型。
 - 我的歌单列表提供外部歌单同步、歌单合并和批量添加歌曲；公共非本人歌单始终只读。外部同步当前支持网易云和 QQ 音乐公开歌单，通过标题+歌手严格匹配当前 Navidrome 曲库，去重后分批写入，不在客户端保存第三方同步管理账号。
@@ -67,6 +68,7 @@
 - 设置页“播放 → 随机播放”默认关闭；开启后仅当当前模式为顺序播放且队列正常播放到末尾时，从当前 Navidrome/Subsonic 服务获取 30 首随机歌曲替换队列并继续播放。随机接口失败或无数据时仍停在队列末尾，等待期间用户手动切歌、切换模式或更换账号后必须丢弃迟到结果；电台不触发该行为。
 - 网络音频使用边播边缓存；缓存完成后再次播放同一首应直接复用本地缓存。
 - 网络歌曲通过缓存代理启动后 20 秒仍未进入可播放状态时，当前歌曲必须取消代理并改用原始音频流；后续自动恢复保持直连，不得重新创建缓存代理形成分钟级重试循环。该兜底只影响本次播放，之后再次播放仍可正常尝试缓存。运行日志必须明确记录本地完整缓存、缓存代理（边播边缓存）、原始音频流直连及代理停滞兜底直连四类播放链路，不得记录鉴权 URL。
+- 设置页“播放 → 播放失败自动切歌”默认开启；只有原始音频流经过有限次数启动重试后仍不可播放时，才按当前播放模式自动切换下一首，正常缓冲和缓存代理改走直连阶段不触发。关闭后保留当前歌曲供手动重试；顺序播放已到队列末尾且没有下一首时仍安全停止。
 - Navidrome/Subsonic 电台使用电台 `streamUrl` 直接串流播放；`.m3u` / `.pls` 会先解析出真实音频 URL；电台直播流不进入普通歌曲缓存。
 - 播放电台时队列为当前音源全部可播放电台频道；播放模式、收藏、拖动进度均禁用，进度两端固定显示 `00:00`，上一台/下一台和频道队列仍可用。
 - Windows 与 macOS 播放器每次启动的默认内部音量为 55%，并允许通过软件音量控件调整；Android、DiLink、iPhone 和 iPad 的内部音量统一为 100%，由系统媒体音量负责最终输出音量。
@@ -97,10 +99,12 @@
 ## 打包记忆
 
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
-- 用户说“打包”时，默认同时执行三件事：升级可见补丁版本和内部 build/versionCode、生成上述三个正式包、根据最终文件生成 `dist/update.json`。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.21+26`。
-- macOS 源码已补齐，但当前默认“打测试包/打包”仍只生成 Windows、Android 通用版和 Android DiLink 三个产物；macOS 构建、签名、公证及产物生成必须在安装 Xcode 与 CocoaPods 的 macOS 主机上单独执行，不能在当前 Windows 主机交叉编译。
+- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode，整理分平台更新内容，提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.0.22+27`。
+- 正式发布必须等待 GitHub Actions 的 Windows、Android 通用版、Android DiLink、macOS、iOS 以及最终 Release 任务全部成功；随后从该 GitHub Release 下载五个最终资产到本地 `dist`，以下载后的真实文件验证版本、Android 证书/ABI/签名、文件大小和哈希。只有实物验证通过后，才根据这五个下载文件重新生成 `dist/update.json`；禁止根据构建前文件、本机文件或 Actions 临时产物预填最终大小和哈希。
+- macOS 源码已补齐；“打测试包”仍只在当前 Windows 主机生成 Windows、Android 通用版和 Android DiLink 三个产物，macOS/iOS 不做本地交叉编译。“打包/打正式包”则由 GitHub Actions 的 macOS runner 生成 macOS 和 iOS 产物，共同组成五端正式 Release。
 - GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
-- `update.json` 的 `updateContent` 必须按 `windows / android / android-dilink / macos / ios` 分平台整理：跨平台改动可以写入全部节点；Windows 安装器、托盘、音量条等 Windows 独有改动只写入 `windows`；Android 通知、MediaSession、手机/平板 UI 等 Android 共用改动只写入 `android` 和 `android-dilink`；DiLink 独有改动只写入 `android-dilink`；macOS 与 iOS 独有改动只写入各自节点。清单中的大小、MD5、SHA256 必须基于实际发布并准备上传到文件服务器的最终包重新计算。
+- `update.json` 的 `updateContent` 必须按 `windows / android / android-dilink / macos / ios` 分平台整理：跨平台改动可以写入全部节点；Windows 安装器、托盘、音量条等 Windows 独有改动只写入 `windows`；Android 通知、MediaSession、手机/平板 UI 等 Android 共用改动只写入 `android` 和 `android-dilink`；DiLink 独有改动只写入 `android-dilink`；macOS 与 iOS 独有改动只写入各自节点。每个平台节点必须同时生成指向文件服务器的 `downloadUrl` 和指向对应 GitHub Release 资产的 `githubDownloadUrl`；清单中的大小、MD5、SHA256 必须基于两个通道实际发布的同一个最终包重新计算。
+- 新客户端只读取并校验 `update.json` 的 `sha256`；清单中的 `md5` 仅为已经发布且仍要求 MD5 的旧客户端保留，不能在旧客户端升级链路仍存在时提前删除。Subsonic 登录鉴权使用的 MD5 属于协议要求，与安装包校验无关，不得移除。
 - 普通 `flutter build windows --release` 在本机可能卡住 Visual Studio 生成器阶段。
 - 可用方式是复用 `build/windows/x64-ninja`：
   - `cmake --build build\windows\x64-ninja --config Release --target zmusic`
@@ -121,6 +125,18 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-08-18：准备发布 `1.0.22+27` 五端正式包。版本已同步到 Flutter、测试默认 `PackageInfo` 和 GitHub Actions 五端 artifact/iOS 断言/Release 描述；本次发布包含播放失败自动切歌、默认/GitHub 双下载通道、Android/DiLink 应用内更新下载与系统安装确认、SHA256 单哈希校验、已下载安装包复用和安装成功后缓存清理。按正式打包规则不运行测试和 `flutter analyze`；将提交并推送 `v1.0.22`，等待 GitHub 五端 Release 完成后下载最终资产、实物校验并生成 `dist/update.json`。
+
+- 2026-08-18：正式打包流程改为 GitHub 五端发布。后续“打包/打正式包”先升版并整理分平台更新内容，再提交推送代码和 `v*` 标签，由 GitHub Actions 生成 Windows、Android、Android DiLink、macOS、iOS 五端 Release；全部任务成功后必须重新下载五个最终 Release 资产到本地 `dist`，完成版本、签名、证书、ABI、大小和哈希实物校验，最后才据此更新 `dist/update.json`。本地三端构建仅保留给“打测试包”。本次只修改协作规则，未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.21+26`。
+
+- 2026-08-18：应用更新校验由 MD5 切换为 SHA256。`AppUpdateInfo` 和清单解析不再读取 MD5，只接受 64 位 `sha256`；更新包下载后仅计算一次 SHA256。下载前若同名缓存包已存在，则先校验 SHA256，一致时直接复用并打开安装器，不再重复下载；不一致或下载校验失败时删除缓存。校验成功后在更新目录记录目标 `versionCode`，Windows/Android 新版本下次启动确认当前 build 已达到目标后递归删除缓存安装包和记录，用户取消安装时因版本未变化而继续保留。同步更新现有测试夹具字段，但按普通功能修改规则仅执行 Dart 格式化和差异检查，未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.21+26`。为保证已发布旧客户端仍能读取下一版清单，发布流程暂时继续保留 `update.json.md5`，新客户端不会读取或计算该值。
+
+- 2026-08-18：Android 通用版与 DiLink 更新改为应用内下载。更新弹窗沿用 Windows 的进度与完整性校验流程，APK 显式保存到应用缓存目录，完成后通过新增原生 `installUpdate` 通道和受限于该缓存目录的 `FileProvider` 打开系统 APK 安装器，不再调用浏览器；Android 8 及以上缺少未知来源授权时先进入当前应用授权页，返回并授权后继续安装，拒绝时回到弹窗显示错误。新增 `REQUEST_INSTALL_PACKAGES` 权限和 AndroidX Core 显式依赖，用户仍可在系统确认页取消，不支持静默覆盖。仅执行 Dart 格式化、Manifest/XML 解析和差异检查，按普通功能修改规则未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.21+26`。
+
+- 2026-08-18：应用更新新增双下载通道。`update.json` 五个平台节点新增 `githubDownloadUrl`，当前文件服务器 `downloadUrl` 继续作为默认通道；更新弹窗在清单提供 GitHub 地址时显示“默认通道 / GitHub 通道”选择，Windows 内置下载和其他平台外部浏览器均使用用户所选地址，两个通道继续执行同一缓存规避与 SHA256 校验规则。同步把正式发布必须生成双地址写入打包记忆。仅执行 Dart 格式化、JSON 解析和差异检查，按普通功能修改规则未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.21+26`。
+
+- 2026-08-18：新增全平台“播放失败自动切歌”设置并默认开启，配置写入现有 `AppSettings` 持久化且在启动加载和运行时修改后立即同步到播放器。仅在日志对应的“原始音频流多次启动失败，服务端音频流当前不可播放”最终失败分支中调用现有 `playNext()`，沿用当前顺序、随机和列表循环规则；关闭开关或当前没有下一首时保留手动重试，不影响正常缓冲与代理转直连。仅执行 Dart 格式化和差异检查，按普通功能修改规则未运行测试、未运行 `flutter analyze`、未打包，版本保持 `1.0.21+26`。
 
 - 2026-08-17：完成 `1.0.21+26` 五端正式发布。首轮 GitHub Release 的 Android 证书异常被拦截后，提交签名修复 `a897b8a`，更新 `v1.0.21` 并触发 GitHub Actions 第二轮 `Build five-platform release`（run `32024258346`）；Windows、Android、Android DiLink、macOS、iOS 和最终 Release 六个任务全部成功，Release 地址为 `https://github.com/zlcece/zmiusc/releases/tag/v1.0.21`。从 Release 重新下载五个最终包并覆盖本地 `dist` 后完成实物校验：Windows `zmusic-windows-x64.exe` 大小 `16,666,325` 字节、MD5 `52A2FD1BF302519A475F73554D0A9632`、SHA256 `881F4036AE717E82384BE5AB9B3925FA77047868F71626328B4BDDBF8B67037C`；Android 通用版大小 `23,969,790` 字节、MD5 `238DE597885883FA35840061F3020D25`、SHA256 `E076303B6C277AA2406046A0CBEFDACB31E6D118432241FA14EE38440781AD63`；DiLink 大小 `23,961,583` 字节、MD5 `34761770D730DB7C10D10CDC6B78D82E`、SHA256 `85BBF72090884B1DE13E5B38173DA1FDE07FF44D0CD1C90773E775559B0B3701`；macOS DMG 大小 `32,908,324` 字节、MD5 `D9B615A38977D13E45595A4DEF23824A`、SHA256 `0D2B36281BC794610A9B7EDC3E37B3D20185844E428C60000DF3EE3E2BE1DBF4`；iOS unsigned IPA 大小 `11,075,551` 字节、MD5 `6EC0F6CE7E0CDCEB9D847103E249DB91`、SHA256 `0959AE91995D41209EA0D21A2ADC0373848CCD8E08E7C14328F96A723FBFFEE7`。两份 Android 包均为 `1.0.21+26`、最低 API 24、仅含 `armeabi-v7a` / `arm64-v8a` 并通过 16 KB zipalign；通用版 target 36/V2，DiLink target 29/V1-only，两包证书 SHA256 均为现有正式证书 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。最终 `dist/update.json` 包含 `windows / android / android-dilink / macos / ios` 五个节点，版本、大小、MD5、SHA256 和带指纹下载地址均匹配上述 GitHub 最终包；清单大小 `4,258` 字节、MD5 `7F23A56462D5F644BAB57DE3C39F2766`、SHA256 `7806DC70CC1F0B23B41422FC4DAEFD8BE499E893F525010B713B428E20270DDA`。按正式打包规则未运行 `flutter analyze` 或测试。
 

@@ -158,8 +158,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.0.21',
-    buildNumber: '26',
+    version: '1.0.22',
+    buildNumber: '27',
     buildSignature: '',
   );
 
@@ -455,7 +455,7 @@ void main() {
                   "versionCode": 110,
                   "downloadUrl": "https://file.zuitimes.com/zmusic/1.0.10/zmusic-windows-x64.exe",
                   "fileName": "zmusic-windows-x64.exe",
-                  "md5": "08D6C05A21512A79A1DFEB9D2A8F262F",
+                  "sha256": "9F64A747E1B97F131FABB6B447296C9B6F0201E79FB3C5356E6C77E89B6A806A",
                   "updateContent": ["修复播放", "优化启动"],
                   "releaseTime": "2026-07-14"
                 },
@@ -477,7 +477,10 @@ void main() {
     expect(update.latestVersion, '1.0.10');
     expect(update.versionCode, 110);
     expect(update.fileName, 'zmusic-windows-x64.exe');
-    expect(update.md5Checksum, '08d6c05a21512a79a1dfeb9d2a8f262f');
+    expect(
+      update.sha256Checksum,
+      '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a',
+    );
     expect(update.updateContent, ['修复播放', '优化启动']);
     expect(update.releaseTime, '2026-07-14');
   });
@@ -516,7 +519,8 @@ void main() {
         versionCode: 16,
         downloadUri: downloadUri,
         fileName: r'..\zmusic-windows-x64.exe',
-        md5Checksum: '08d6c05a21512a79a1dfeb9d2a8f262f',
+        sha256Checksum:
+            '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a',
         updateContent: const [],
         releaseTime: '',
       ),
@@ -4251,8 +4255,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.0.21',
-        buildNumber: '26',
+        version: '1.0.22',
+        buildNumber: '27',
         buildSignature: '',
       );
     });
@@ -4406,7 +4410,8 @@ plain text
                   'downloadUrl':
                       'https://file.zuitimes.com/zmusic/1.0.22/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
-                  'md5': 'D41D8CD98F00B204E9800998ECF8427E',
+                  'sha256':
+                      'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
                   'updateContent': ['启动自动检查更新'],
                   'releaseTime': '2026-07-16',
                 },
@@ -4472,7 +4477,8 @@ plain text
                   'versionCode': 122,
                   'downloadUrl': downloadUri.toString(),
                   'fileName': 'zmusic-windows-x64.exe',
-                  'md5': 'D41D8CD98F00B204E9800998ECF8427E',
+                  'sha256':
+                      'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
                   'updateContent': ['修复播放详情跳转', '优化更新检查'],
                   'releaseTime': '2026-07-14',
                 },
@@ -4506,7 +4512,7 @@ plain text
         .toList();
     expect(requestCount, 1);
     expect(visibleText, contains('发现新版本 1.0.22'));
-    expect(find.text('当前版本：1.0.21'), findsOneWidget);
+    expect(find.text('当前版本：1.0.22'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('下载更新'), findsOneWidget);

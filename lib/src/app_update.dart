@@ -5,20 +5,25 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 final Uri appUpdateManifestUri = Uri.parse(
   'https://file.zuitimes.com/zmusic/0/update.json',
 );
 
 const MethodChannel _androidTaskChannel = MethodChannel('com.zmusic.app/task');
+const String _pendingUpdateMetadataFileName = 'pending-update.json';
+
+enum AppUpdateDownloadChannel { defaultChannel, github }
 
 class AppUpdateInfo {
   const AppUpdateInfo({
     required this.latestVersion,
     required this.versionCode,
     required this.downloadUri,
+    this.githubDownloadUri,
     required this.fileName,
-    required this.md5Checksum,
+    required this.sha256Checksum,
     required this.updateContent,
     required this.releaseTime,
   });
@@ -26,10 +31,18 @@ class AppUpdateInfo {
   final String latestVersion;
   final int versionCode;
   final Uri downloadUri;
+  final Uri? githubDownloadUri;
   final String fileName;
-  final String md5Checksum;
+  final String sha256Checksum;
   final List<String> updateContent;
   final String releaseTime;
+
+  Uri downloadUriFor(AppUpdateDownloadChannel channel) {
+    if (channel == AppUpdateDownloadChannel.github) {
+      return githubDownloadUri ?? downloadUri;
+    }
+    return downloadUri;
+  }
 }
 
 class AppUpdateDownloadProgress {
@@ -78,15 +91,26 @@ class AppUpdateService {
     }
 
     final latestVersion = _requiredString(platform, 'latestVersion');
-    final md5Checksum = _requiredString(platform, 'md5').toLowerCase();
-    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(md5Checksum)) {
-      throw const FormatException('更新清单中的 MD5 无效。');
+    final sha256Checksum = _requiredString(platform, 'sha256').toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(sha256Checksum)) {
+      throw const FormatException('更新清单中的 SHA256 无效。');
     }
     final downloadUri = Uri.tryParse(_requiredString(platform, 'downloadUrl'));
     if (downloadUri == null ||
         !downloadUri.hasScheme ||
         (downloadUri.scheme != 'http' && downloadUri.scheme != 'https')) {
       throw const FormatException('更新下载地址无效。');
+    }
+    final githubDownloadUrl = _optionalString(platform['githubDownloadUrl']);
+    final githubDownloadUri = githubDownloadUrl.isEmpty
+        ? null
+        : Uri.tryParse(githubDownloadUrl);
+    if (githubDownloadUrl.isNotEmpty &&
+        (githubDownloadUri == null ||
+            !githubDownloadUri.hasScheme ||
+            (githubDownloadUri.scheme != 'http' &&
+                githubDownloadUri.scheme != 'https'))) {
+      throw const FormatException('GitHub 更新下载地址无效。');
     }
     final content = platform['updateContent'];
     final updateContent = content is List
@@ -101,42 +125,100 @@ class AppUpdateService {
       latestVersion: latestVersion,
       versionCode: _readInt(platform['versionCode']),
       downloadUri: downloadUri,
+      githubDownloadUri: githubDownloadUri,
       fileName: _optionalString(platform['fileName']),
-      md5Checksum: md5Checksum,
+      sha256Checksum: sha256Checksum,
       updateContent: updateContent,
       releaseTime: _optionalString(platform['releaseTime']),
     );
   }
 
+  Future<void> cleanupInstalledUpdate({
+    required int installedVersionCode,
+    Directory? destinationDirectory,
+  }) async {
+    if (installedVersionCode <= 0) {
+      return;
+    }
+    final directory = await _resolveUpdateDirectory(destinationDirectory);
+    final metadataFile = File(
+      '${directory.path}${Platform.pathSeparator}$_pendingUpdateMetadataFileName',
+    );
+    if (!await metadataFile.exists()) {
+      return;
+    }
+    try {
+      final metadata = jsonDecode(await metadataFile.readAsString());
+      final targetVersionCode = metadata is Map<String, dynamic>
+          ? _readInt(metadata['versionCode'])
+          : 0;
+      if (targetVersionCode <= 0) {
+        await directory.delete(recursive: true);
+        return;
+      }
+      if (installedVersionCode >= targetVersionCode) {
+        await directory.delete(recursive: true);
+      }
+    } on FileSystemException {
+      rethrow;
+    } on FormatException {
+      await directory.delete(recursive: true);
+    }
+  }
+
   Future<File> downloadUpdate(
     AppUpdateInfo update, {
+    AppUpdateDownloadChannel channel = AppUpdateDownloadChannel.defaultChannel,
     required ValueChanged<AppUpdateDownloadProgress> onProgress,
     Directory? destinationDirectory,
   }) async {
-    final directory =
-        destinationDirectory ??
-        Directory(
-          '${Directory.systemTemp.path}${Platform.pathSeparator}zmusic-updates',
-        );
+    final directory = await _resolveUpdateDirectory(destinationDirectory);
     await directory.create(recursive: true);
 
+    final downloadUri = update.downloadUriFor(channel);
     final fileName = _safeUpdateFileName(
-      update.fileName.isEmpty
-          ? update.downloadUri.pathSegments.last
-          : update.fileName,
+      update.fileName.isEmpty ? downloadUri.pathSegments.last : update.fileName,
     );
     final destination = File(
       '${directory.path}${Platform.pathSeparator}$fileName',
     );
+    final metadataFile = File(
+      '${directory.path}${Platform.pathSeparator}$_pendingUpdateMetadataFileName',
+    );
 
-    final createdClient = httpClient == null ? http.Client() : null;
-    final client = httpClient ?? createdClient!;
     onProgress(
       const AppUpdateDownloadProgress(receivedBytes: 0, totalBytes: null),
     );
+    if (await destination.exists()) {
+      try {
+        final cachedSize = await destination.length();
+        final cachedSha256 = await _fileSha256(destination);
+        if (cachedSha256 == update.sha256Checksum) {
+          await _writePendingUpdateMetadata(
+            metadataFile,
+            update: update,
+            fileName: fileName,
+          );
+          onProgress(
+            AppUpdateDownloadProgress(
+              receivedBytes: cachedSize,
+              totalBytes: cachedSize,
+            ),
+          );
+          return destination;
+        }
+      } on FileSystemException {
+        // Invalid or inaccessible cached packages are replaced by a new download.
+      }
+      await _deleteFileIfPresent(destination);
+      await _deleteFileIfPresent(metadataFile);
+    }
+
+    final createdClient = httpClient == null ? http.Client() : null;
+    final client = httpClient ?? createdClient!;
 
     try {
-      final requestUri = _withCacheBust(update.downloadUri);
+      final requestUri = _withCacheBust(downloadUri);
       final request = http.Request('GET', requestUri)
         ..headers.addAll(_noCacheHeaders);
       final response = await client.send(request);
@@ -168,26 +250,71 @@ class AppUpdateService {
       } finally {
         await sink.close();
       }
-      final downloadedMd5 = (await destination.openRead().transform(md5).first)
-          .toString()
-          .toLowerCase();
-      if (downloadedMd5 != update.md5Checksum) {
+      final downloadedSha256 = await _fileSha256(destination);
+      if (downloadedSha256 != update.sha256Checksum) {
         throw Exception(
-          '更新文件 MD5 校验失败，期望 ${update.md5Checksum.toUpperCase()}，'
-          '实际 ${downloadedMd5.toUpperCase()}。',
+          '更新文件 SHA256 校验失败，期望 ${update.sha256Checksum.toUpperCase()}，'
+          '实际 ${downloadedSha256.toUpperCase()}。',
         );
       }
+      await _writePendingUpdateMetadata(
+        metadataFile,
+        update: update,
+        fileName: fileName,
+      );
       return destination;
     } catch (_) {
-      if (destination.existsSync()) {
-        try {
-          destination.deleteSync();
-        } catch (_) {}
-      }
+      await _deleteFileIfPresent(destination);
+      await _deleteFileIfPresent(metadataFile);
       rethrow;
     } finally {
       createdClient?.close();
     }
+  }
+}
+
+Future<Directory> _resolveUpdateDirectory(
+  Directory? destinationDirectory,
+) async {
+  if (destinationDirectory != null) {
+    return destinationDirectory;
+  }
+  final tempDirectory = defaultTargetPlatform == TargetPlatform.android
+      ? await getTemporaryDirectory()
+      : Directory.systemTemp;
+  return Directory(
+    '${tempDirectory.path}${Platform.pathSeparator}zmusic-updates',
+  );
+}
+
+Future<String> _fileSha256(File file) async {
+  return (await file.openRead().transform(sha256).first)
+      .toString()
+      .toLowerCase();
+}
+
+Future<void> _writePendingUpdateMetadata(
+  File metadataFile, {
+  required AppUpdateInfo update,
+  required String fileName,
+}) async {
+  await metadataFile.writeAsString(
+    jsonEncode({
+      'versionCode': update.versionCode,
+      'fileName': fileName,
+      'sha256': update.sha256Checksum,
+    }),
+    flush: true,
+  );
+}
+
+Future<void> _deleteFileIfPresent(File file) async {
+  try {
+    if (await file.exists()) {
+      await file.delete();
+    }
+  } on FileSystemException {
+    // A later write will surface the useful error if the stale file is locked.
   }
 }
 
@@ -217,6 +344,15 @@ Future<String> resolveAppUpdatePlatformKey() async {
     return 'android';
   }
   throw UnsupportedError('当前平台暂不支持应用内更新。');
+}
+
+Future<void> openAndroidUpdateInstaller(File updateFile) async {
+  if (defaultTargetPlatform != TargetPlatform.android) {
+    throw UnsupportedError('当前平台不支持 Android 更新安装。');
+  }
+  await _androidTaskChannel.invokeMethod<void>('installUpdate', {
+    'path': updateFile.path,
+  });
 }
 
 bool isNewerAppVersion(String latestVersion, String currentVersion) {
