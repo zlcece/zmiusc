@@ -23,6 +23,7 @@ class LibraryStore {
   static const _loginUsernameKey = 'login_username';
   static const _loginPasswordKey = 'login_password';
   static const _themeModeKey = 'theme_mode';
+  static const _desktopPlayerVolumeKey = 'desktop_player_volume';
   static const _playbackSessionKey = 'playback_session';
   static const _dailyRecommendationKey = 'daily_recommendation';
 
@@ -227,6 +228,18 @@ class LibraryStore {
 
   Future<void> saveSettings(AppSettings settings) async {
     await _writeString(_settingsKey, jsonEncode(settings.toJson()));
+  }
+
+  Future<double?> loadDesktopPlayerVolume() async {
+    final value = double.tryParse(
+      await _readString(_desktopPlayerVolumeKey) ?? '',
+    );
+    return value == null || value < 0 || value > 1 ? null : value;
+  }
+
+  Future<void> saveDesktopPlayerVolume(double volume) async {
+    final normalized = volume.clamp(0, 1).toDouble();
+    await _writeString(_desktopPlayerVolumeKey, normalized.toString());
   }
 
   Future<String?> _readString(String key) async {

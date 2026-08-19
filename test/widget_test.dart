@@ -77,6 +77,7 @@ class _MemoryLibraryStore extends LibraryStore {
   String? savedLoginUsername;
   String? savedLoginPassword;
   AppSettings? savedSettings;
+  double? savedDesktopPlayerVolume;
   PlaybackSession? savedPlaybackSession;
   DailyRecommendationCache? savedDailyRecommendation;
 
@@ -110,6 +111,14 @@ class _MemoryLibraryStore extends LibraryStore {
   @override
   Future<void> saveSettings(AppSettings settings) async {
     savedSettings = settings;
+  }
+
+  @override
+  Future<double?> loadDesktopPlayerVolume() async => savedDesktopPlayerVolume;
+
+  @override
+  Future<void> saveDesktopPlayerVolume(double volume) async {
+    savedDesktopPlayerVolume = volume;
   }
 
   @override
@@ -158,8 +167,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.1.0',
-    buildNumber: '27',
+    version: '1.1.1',
+    buildNumber: '28',
     buildSignature: '',
   );
 
@@ -4255,8 +4264,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.1.0',
-        buildNumber: '27',
+        version: '1.1.1',
+        buildNumber: '28',
         buildSignature: '',
       );
     });
@@ -4405,10 +4414,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.1',
-                  'versionCode': 28,
+                  'latestVersion': '1.1.2',
+                  'versionCode': 29,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.1.1/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.1.2/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4436,7 +4445,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.1.1'), findsOneWidget);
+    expect(find.text('发现新版本 1.1.2'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4473,8 +4482,8 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.1',
-                  'versionCode': 28,
+                  'latestVersion': '1.1.2',
+                  'versionCode': 29,
                   'downloadUrl': downloadUri.toString(),
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
@@ -4511,8 +4520,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.1.1'));
-    expect(find.text('当前版本：1.1.0'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.1.2'));
+    expect(find.text('当前版本：1.1.1'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('下载更新'), findsOneWidget);
@@ -7127,6 +7136,23 @@ plain text
     await tester.pump();
 
     expect(player.assignedVolume, 0.55);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('restores the saved desktop player volume', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    final store = _MemoryLibraryStore();
+    final player = _RecordingPlayerController();
+    final controller = AppController(store: store, player: player);
+    await controller.saveDesktopPlayerVolume(0.72);
+
+    await tester.pumpWidget(ZmusicApp(controller: controller));
+    await tester.pump();
+
+    expect(player.assignedVolume, 0.72);
+    expect(store.savedDesktopPlayerVolume, 0.72);
     debugDefaultTargetPlatformOverride = null;
   });
 

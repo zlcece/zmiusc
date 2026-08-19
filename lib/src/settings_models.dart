@@ -45,6 +45,7 @@ class AppSettings {
     this.closeButtonBehavior = CloseButtonBehavior.exit,
     this.launchAtStartup = false,
     this.playRandomAfterSequentialQueue = false,
+    this.autoPlayDailyRecommendationOnStartup = false,
     this.skipUnplayableTracks = true,
     this.showDailyRecommendation = true,
     this.homeShortcutOrder = defaultHomeShortcutOrder,
@@ -65,6 +66,7 @@ class AppSettings {
   final CloseButtonBehavior closeButtonBehavior;
   final bool launchAtStartup;
   final bool playRandomAfterSequentialQueue;
+  final bool autoPlayDailyRecommendationOnStartup;
   final bool skipUnplayableTracks;
   final bool showDailyRecommendation;
   final List<HomeShortcutSection> homeShortcutOrder;
@@ -130,6 +132,7 @@ class AppSettings {
     CloseButtonBehavior? closeButtonBehavior,
     bool? launchAtStartup,
     bool? playRandomAfterSequentialQueue,
+    bool? autoPlayDailyRecommendationOnStartup,
     bool? skipUnplayableTracks,
     bool? showDailyRecommendation,
     List<HomeShortcutSection>? homeShortcutOrder,
@@ -151,6 +154,9 @@ class AppSettings {
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
       playRandomAfterSequentialQueue:
           playRandomAfterSequentialQueue ?? this.playRandomAfterSequentialQueue,
+      autoPlayDailyRecommendationOnStartup:
+          autoPlayDailyRecommendationOnStartup ??
+          this.autoPlayDailyRecommendationOnStartup,
       skipUnplayableTracks: skipUnplayableTracks ?? this.skipUnplayableTracks,
       showDailyRecommendation:
           showDailyRecommendation ?? this.showDailyRecommendation,
@@ -179,6 +185,8 @@ class AppSettings {
       'closeButtonBehavior': closeButtonBehavior.name,
       'launchAtStartup': launchAtStartup,
       'playRandomAfterSequentialQueue': playRandomAfterSequentialQueue,
+      'autoPlayDailyRecommendationOnStartup':
+          autoPlayDailyRecommendationOnStartup,
       'skipUnplayableTracks': skipUnplayableTracks,
       'showDailyRecommendation': showDailyRecommendation,
       'homeShortcutOrder': homeShortcutOrder
@@ -221,6 +229,11 @@ class AppSettings {
       playRandomAfterSequentialQueue: _readBool(
         json,
         'playRandomAfterSequentialQueue',
+        fallback: false,
+      ),
+      autoPlayDailyRecommendationOnStartup: _readBool(
+        json,
+        'autoPlayDailyRecommendationOnStartup',
         fallback: false,
       ),
       skipUnplayableTracks: _readBool(

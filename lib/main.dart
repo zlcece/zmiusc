@@ -87,7 +87,11 @@ Future<void> _bootstrap() async {
   }
 
   if (controller.isAuthenticated) {
-    unawaited(controller.loadLibraryOverview());
+    unawaited(
+      controller.loadLibraryOverview(
+        autoPlayDailyRecommendationOnStartup: true,
+      ),
+    );
   }
   _desktopIntegration = DesktopIntegration(controller);
   unawaited(_initializeDesktopIntegration(_desktopIntegration!));

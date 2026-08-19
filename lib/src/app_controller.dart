@@ -89,6 +89,7 @@ class AppController extends ChangeNotifier {
   bool hasNextSearchSongPage = false;
   LibraryOverview libraryOverview = const LibraryOverview();
   AppSettings settings = const AppSettings();
+  double? desktopPlayerVolume;
   String? selectedServerId;
   String? statusMessage;
   String loginServerUrl = defaultMusicServerUrl;
@@ -202,6 +203,9 @@ class AppController extends ChangeNotifier {
     final restoredServers = await store.loadServers();
     customTracks = await store.loadCustomTracks();
     settings = (await store.loadSettings()).normalized;
+    if (Platform.isWindows || Platform.isMacOS) {
+      desktopPlayerVolume = await store.loadDesktopPlayerVolume();
+    }
     AppLogger.instance.setLevel(settings.logLevel);
     player.setSkipUnplayableTracks(settings.skipUnplayableTracks);
     if (settings.cacheDirectory.isEmpty) {
@@ -360,7 +364,7 @@ class AppController extends ChangeNotifier {
       isBusy = false;
       notifyListeners();
     }
-    unawaited(loadLibraryOverview());
+    unawaited(loadLibraryOverview(autoPlayDailyRecommendationOnStartup: true));
   }
 
   Future<void> logout() async {
@@ -416,6 +420,12 @@ class AppController extends ChangeNotifier {
     if (shouldReloadHomeOverview && selectedServer != null) {
       unawaited(loadLibraryOverview());
     }
+  }
+
+  Future<void> saveDesktopPlayerVolume(double volume) async {
+    final normalized = volume.clamp(0, 1).toDouble();
+    desktopPlayerVolume = normalized;
+    await store.saveDesktopPlayerVolume(normalized);
   }
 
   bool _shouldReloadHomeOverviewForSettings(
@@ -564,7 +574,9 @@ class AppController extends ChangeNotifier {
     });
   }
 
-  Future<void> loadLibraryOverview() async {
+  Future<void> loadLibraryOverview({
+    bool autoPlayDailyRecommendationOnStartup = false,
+  }) async {
     final server = selectedServer;
     if (server == null) {
       libraryOverview = const LibraryOverview();
@@ -595,6 +607,21 @@ class AppController extends ChangeNotifier {
       isRefreshingLibrary = false;
       notifyListeners();
     }
+    if (autoPlayDailyRecommendationOnStartup) {
+      await _autoPlayDailyRecommendationAfterStartup();
+    }
+  }
+
+  Future<void> _autoPlayDailyRecommendationAfterStartup() async {
+    if (!settings.autoPlayDailyRecommendationOnStartup ||
+        !settings.showDailyRecommendation ||
+        recommendedTracks.isEmpty ||
+        player.isPlaying ||
+        player.isBuffering) {
+      return;
+    }
+    AppLogger.instance.info('recommendation', '启动加载完成，自动播放每日推荐');
+    await playTrackList(List<Track>.of(recommendedTracks), 0);
   }
 
   Future<void> _loadRemoteLibraryOverviewIncrementally(

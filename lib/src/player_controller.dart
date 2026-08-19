@@ -12,13 +12,14 @@ import 'playback_source.dart';
 import 'streaming_audio_cache_source.dart';
 
 const Duration _playbackOpenInterruptTimeout = Duration(seconds: 3);
+const int _streamingStartupProgressExtensionLimit = 5;
 
 class PlayerController extends ChangeNotifier {
   PlayerController({
     @visibleForTesting PlaybackEngine? playbackEngine,
     @visibleForTesting
-    this._startupRecoveryTimeout = const Duration(seconds: 20),
-    @visibleForTesting this._startupRecoveryAttempts = 2,
+    this._startupRecoveryTimeout = const Duration(seconds: 25),
+    @visibleForTesting this._startupRecoveryAttempts = 1,
     @visibleForTesting Duration? startupSwitchSettleDelay,
   }) : _audioPlayer = playbackEngine ?? _createPlaybackEngine(),
        _startupSwitchSettleDelay =
@@ -997,11 +998,16 @@ class PlayerController extends ChangeNotifier {
     int index,
     int recoveryAttemptsRemaining, {
     required bool bypassStreamingCache,
+    int? observedProxyBytes,
+    int progressExtensionsRemaining = _streamingStartupProgressExtensionLimit,
   }) {
     _cancelStartupRecovery();
     if (_startupRecoveryTimeout <= Duration.zero) {
       return;
     }
+    final scheduledProxy = bypassStreamingCache ? _streamingCacheProxy : null;
+    final scheduledProxyBytes =
+        observedProxyBytes ?? scheduledProxy?.downloadedBytes ?? 0;
     _startupRecoveryTimer = Timer(_startupRecoveryTimeout, () {
       _startupRecoveryTimer = null;
       if (!_shouldApplyPlaybackRequest(requestId, index)) {
@@ -1014,6 +1020,28 @@ class PlayerController extends ChangeNotifier {
       final stalled =
           opening || _audioPlayer.buffering || !_audioPlayer.playing;
       if (!stalled) {
+        return;
+      }
+      final activeProxy = _streamingCacheProxy;
+      final downloadedBytes = activeProxy?.downloadedBytes ?? 0;
+      if (bypassStreamingCache &&
+          activeProxy != null &&
+          (scheduledProxy == null || identical(activeProxy, scheduledProxy)) &&
+          activeProxy.isDownloading &&
+          downloadedBytes > scheduledProxyBytes &&
+          progressExtensionsRemaining > 0) {
+        AppLogger.instance.info(
+          'player',
+          '缓存代理仍在接收数据（已接收 $downloadedBytes 字节），继续等待播放器启动',
+        );
+        _armStartupRecovery(
+          requestId,
+          index,
+          recoveryAttemptsRemaining,
+          bypassStreamingCache: bypassStreamingCache,
+          observedProxyBytes: downloadedBytes,
+          progressExtensionsRemaining: progressExtensionsRemaining - 1,
+        );
         return;
       }
       unawaited(
@@ -1047,7 +1075,9 @@ class PlayerController extends ChangeNotifier {
       bypassStreamingCache && proxyDownloadedBytes != null
           ? '缓存代理启动停滞（已接收 $proxyDownloadedBytes 字节），正在刷新地址并改用原始音频流'
           : bypassStreamingCache
-          ? '原始音频流启动停滞，正在重试直连'
+          ? recoveryAttemptsRemaining > 0
+                ? '原始音频流启动停滞，正在重试直连'
+                : '原始音频流启动停滞，已达到尝试上限'
           : '播放启动停滞，正在重试当前歌曲',
     );
     try {
@@ -1114,7 +1144,7 @@ class PlayerController extends ChangeNotifier {
     AppLogger.instance.error(
       'player',
       directStreamAttempt
-          ? '原始音频流多次启动失败，服务端音频流当前不可播放'
+          ? '原始音频流启动失败，服务端音频流当前不可播放'
           : '播放启动多次失败，已停止缓冲，可手动重试当前歌曲',
     );
     notifyListeners();

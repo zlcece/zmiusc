@@ -398,6 +398,7 @@ enum _PlaylistTool { sync, merge, batchAdd }
 class _HomePageState extends State<HomePage> {
   final TextEditingController _searchController = TextEditingController();
   Timer? _libraryStatusTimer;
+  Timer? _desktopVolumePersistTimer;
   String? _libraryStatusMessage;
   bool _wasRefreshingLibrary = false;
   LibrarySearchScope _searchScope = LibrarySearchScope.songs;
@@ -437,6 +438,10 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     widget.controller.removeListener(_handleControllerChanged);
     _libraryStatusTimer?.cancel();
+    _desktopVolumePersistTimer?.cancel();
+    if (_usesDesktopVolumePersistence) {
+      unawaited(widget.controller.saveDesktopPlayerVolume(_volume));
+    }
     _searchController.dispose();
     super.dispose();
   }
@@ -1129,6 +1134,7 @@ class _HomePageState extends State<HomePage> {
           _lastNonZeroVolume = playerVolume;
         }
       });
+      _scheduleDesktopVolumePersistence(playerVolume);
     }
     final isRefreshing = widget.controller.isRefreshingLibrary;
     if (!_wasRefreshingLibrary && isRefreshing) {
@@ -1443,20 +1449,37 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => _volume = nextVolume);
     widget.controller.player.setVolume(nextVolume);
+    _scheduleDesktopVolumePersistence(nextVolume);
   }
 
   Future<void> _initializePlayerVolume() async {
-    final initialVolume =
-        defaultTargetPlatform == TargetPlatform.android ||
-            defaultTargetPlatform == TargetPlatform.iOS
-        ? _mobilePlayerVolume
-        : _defaultPlayerVolume;
+    final initialVolume = switch (defaultTargetPlatform) {
+      TargetPlatform.android || TargetPlatform.iOS => _mobilePlayerVolume,
+      TargetPlatform.windows || TargetPlatform.macOS =>
+        widget.controller.desktopPlayerVolume ?? _defaultPlayerVolume,
+      _ => _defaultPlayerVolume,
+    };
     if (!mounted) {
       return;
     }
     _volume = initialVolume;
     _lastNonZeroVolume = initialVolume;
     await widget.controller.player.setVolume(initialVolume);
+  }
+
+  bool get _usesDesktopVolumePersistence =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS;
+
+  void _scheduleDesktopVolumePersistence(double volume) {
+    if (!_usesDesktopVolumePersistence) {
+      return;
+    }
+    _desktopVolumePersistTimer?.cancel();
+    _desktopVolumePersistTimer = Timer(
+      const Duration(milliseconds: 300),
+      () => unawaited(widget.controller.saveDesktopPlayerVolume(volume)),
+    );
   }
 
   void _toggleMute() {
@@ -2083,6 +2106,21 @@ class _SettingsPageState extends State<_SettingsPage> {
                             _saveSettings(
                               _settings.copyWith(
                                 playRandomAfterSequentialQueue: value,
+                              ),
+                            ),
+                          ),
+                        ),
+                        CompactSwitchListTile(
+                          key: const ValueKey(
+                            'auto-play-daily-recommendation-on-startup',
+                          ),
+                          title: const Text('启动后自动播放每日推荐'),
+                          subtitle: const Text('登录并加载完成后，自动替换播放队列并从第一首开始播放'),
+                          value: _settings.autoPlayDailyRecommendationOnStartup,
+                          onChanged: (value) => unawaited(
+                            _saveSettings(
+                              _settings.copyWith(
+                                autoPlayDailyRecommendationOnStartup: value,
                               ),
                             ),
                           ),
@@ -8598,63 +8636,73 @@ class _QueueSheet extends StatelessWidget {
                                   itemBuilder: (context, index) {
                                     final track = queue[index];
                                     final isCurrent = current?.id == track.id;
-                                    return Material(
-                                      color: Colors.transparent,
-                                      child: ListTile(
-                                        dense: true,
-                                        visualDensity: VisualDensity.compact,
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                              horizontal: 12,
-                                              vertical: 2,
+                                    return GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onSecondaryTapDown: isRadioQueue
+                                          ? null
+                                          : (details) => _showQueueTrackMenu(
+                                              context,
+                                              details.globalPosition,
+                                              track,
                                             ),
-                                        horizontalTitleGap: 10,
-                                        selected: isCurrent,
-                                        leading: _TrackArtwork(
-                                          track: track,
-                                          size: 38,
-                                        ),
-                                        title: _TrackTitle(
-                                          track: track,
-                                          compact: true,
-                                          textStyle: Theme.of(context)
-                                              .textTheme
-                                              .bodyMedium
-                                              ?.copyWith(
-                                                fontWeight: isCurrent
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w500,
+                                      child: Material(
+                                        color: Colors.transparent,
+                                        child: ListTile(
+                                          dense: true,
+                                          visualDensity: VisualDensity.compact,
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 12,
+                                                vertical: 2,
                                               ),
-                                        ),
-                                        subtitle: Text(
-                                          track.artist,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        trailing: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            _FavoriteTrackButton(
-                                              controller: controller,
-                                              track: track,
-                                              compact: true,
-                                            ),
-                                            if (isCurrent)
-                                              const Padding(
-                                                padding: EdgeInsets.only(
-                                                  left: 2,
+                                          horizontalTitleGap: 10,
+                                          selected: isCurrent,
+                                          leading: _TrackArtwork(
+                                            track: track,
+                                            size: 38,
+                                          ),
+                                          title: _TrackTitle(
+                                            track: track,
+                                            compact: true,
+                                            textStyle: Theme.of(context)
+                                                .textTheme
+                                                .bodyMedium
+                                                ?.copyWith(
+                                                  fontWeight: isCurrent
+                                                      ? FontWeight.w700
+                                                      : FontWeight.w500,
                                                 ),
-                                                child: Icon(Icons.graphic_eq),
+                                          ),
+                                          subtitle: Text(
+                                            track.artist,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          trailing: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              _FavoriteTrackButton(
+                                                controller: controller,
+                                                track: track,
+                                                compact: true,
                                               ),
-                                          ],
+                                              if (isCurrent)
+                                                const Padding(
+                                                  padding: EdgeInsets.only(
+                                                    left: 2,
+                                                  ),
+                                                  child: Icon(Icons.graphic_eq),
+                                                ),
+                                            ],
+                                          ),
+                                          onTap: () {
+                                            Navigator.of(context).pop();
+                                            controller.playTrackList(
+                                              queue,
+                                              index,
+                                            );
+                                          },
                                         ),
-                                        onTap: () {
-                                          Navigator.of(context).pop();
-                                          controller.playTrackList(
-                                            queue,
-                                            index,
-                                          );
-                                        },
                                       ),
                                     );
                                   },
@@ -8675,6 +8723,37 @@ class _QueueSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _showQueueTrackMenu(
+    BuildContext context,
+    Offset position,
+    Track track,
+  ) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'play_next',
+          child: ListTile(
+            leading: Icon(Icons.queue_play_next_rounded),
+            title: Text('下一首播放'),
+          ),
+        ),
+      ],
+    );
+    if (!context.mounted || action != 'play_next') {
+      return;
+    }
+    await controller.playTrackNext(track);
+    if (context.mounted) {
+      _showSourceMessage(context, controller.statusMessage ?? '已设为下一首播放。');
+    }
   }
 }
 
