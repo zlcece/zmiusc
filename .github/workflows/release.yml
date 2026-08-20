@@ -263,7 +263,7 @@ jobs:
           APP_PATH='build/ios/iphoneos/Runner.app'
           test -d "$APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.1.1'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '28'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '29'
           mkdir -p dist/ios/Payload
           cp -R "$APP_PATH" dist/ios/Payload/
           rm -rf dist/ios/Payload/Runner.app/_CodeSignature
@@ -299,7 +299,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Zmusic 1.1.1
-          body: Zmusic 1.1.1+28 five-platform release. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
+          body: Zmusic 1.1.1+29 five-platform release. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
           fail_on_unmatched_files: true
           files: |
             release/zmusic-windows-x64.exe

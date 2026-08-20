@@ -27,6 +27,7 @@ const String _brandBackgroundAsset = 'assets/branding/zmusic_note.webp';
 const double _defaultPlayerVolume = 0.55;
 const double _mobilePlayerVolume = 1;
 const MethodChannel _androidTaskChannel = MethodChannel('com.zmusic.app/task');
+final Expando<bool> _appUpdateDialogVisibility = Expando<bool>();
 
 class ZmusicApp extends StatefulWidget {
   const ZmusicApp({
@@ -2979,22 +2980,50 @@ Future<void> _showAppUpdateDialog({
   required AppController controller,
   required String currentVersion,
   required AppUpdateInfo update,
-}) {
+}) async {
+  if ((_appUpdateDialogVisibility[controller] ?? false) || !context.mounted) {
+    return;
+  }
+  _appUpdateDialogVisibility[controller] = true;
   var downloading = false;
-  var downloadChannel = AppUpdateDownloadChannel.defaultChannel;
+  AppUpdateDownloadChannel? activeDownloadChannel;
   AppUpdateDownloadProgress? progress;
   String? downloadError;
-  return showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder: (dialogContext) {
-      return StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: Text('发现新版本 ${update.latestVersion}'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: SingleChildScrollView(
-              child: Column(
+  try {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            void startDownload(AppUpdateDownloadChannel channel) {
+              setDialogState(() => activeDownloadChannel = channel);
+              unawaited(
+                _openAppUpdateDownload(
+                  pageContext: context,
+                  dialogContext: dialogContext,
+                  controller: controller,
+                  update: update,
+                  downloadChannel: channel,
+                  setDialogState: setDialogState,
+                  onProgress: (value) => progress = value,
+                  setDownloading: (value) => downloading = value,
+                  setError: (value) => downloadError = value,
+                ),
+              );
+            }
+
+            return AlertDialog(
+              key: const ValueKey('app-update-dialog'),
+              insetPadding: _responsiveDialogInsetPadding(dialogContext),
+              constraints: _responsiveDialogConstraints(
+                dialogContext,
+                maxWidth: 480,
+                maxHeightFactor: 0.82,
+              ),
+              scrollable: true,
+              title: Text('发现新版本 ${update.latestVersion}'),
+              content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -3015,36 +3044,6 @@ Future<void> _showAppUpdateDialog({
                         child: Text('• $item'),
                       ),
                   ],
-                  if (update.githubDownloadUri != null) ...[
-                    const SizedBox(height: 14),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 8,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        const Text('下载通道'),
-                        SegmentedButton<AppUpdateDownloadChannel>(
-                          showSelectedIcon: false,
-                          segments: const [
-                            ButtonSegment(
-                              value: AppUpdateDownloadChannel.defaultChannel,
-                              label: Text('默认通道'),
-                            ),
-                            ButtonSegment(
-                              value: AppUpdateDownloadChannel.github,
-                              label: Text('GitHub 通道'),
-                            ),
-                          ],
-                          selected: {downloadChannel},
-                          onSelectionChanged: downloading
-                              ? null
-                              : (selection) => setDialogState(
-                                  () => downloadChannel = selection.single,
-                                ),
-                        ),
-                      ],
-                    ),
-                  ],
                   if (downloading) ...[
                     const SizedBox(height: 16),
                     LinearProgressIndicator(value: progress?.fraction),
@@ -3062,39 +3061,51 @@ Future<void> _showAppUpdateDialog({
                   ],
                 ],
               ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: downloading
-                  ? null
-                  : () => Navigator.of(dialogContext).pop(),
-              child: const Text('稍后'),
-            ),
-            FilledButton.icon(
-              onPressed: downloading
-                  ? null
-                  : () => unawaited(
-                      _openAppUpdateDownload(
-                        pageContext: context,
-                        dialogContext: dialogContext,
-                        controller: controller,
-                        update: update,
-                        downloadChannel: downloadChannel,
-                        setDialogState: setDialogState,
-                        onProgress: (value) => progress = value,
-                        setDownloading: (value) => downloading = value,
-                        setError: (value) => downloadError = value,
-                      ),
+              actions: [
+                TextButton(
+                  onPressed: downloading
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('稍后更新'),
+                ),
+                FilledButton.icon(
+                  onPressed: downloading
+                      ? null
+                      : () => startDownload(
+                          AppUpdateDownloadChannel.defaultChannel,
+                        ),
+                  icon: const Icon(Icons.download_outlined),
+                  label: Text(
+                    downloading &&
+                            activeDownloadChannel ==
+                                AppUpdateDownloadChannel.defaultChannel
+                        ? '下载中'
+                        : '服务器更新',
+                  ),
+                ),
+                if (update.githubDownloadUri != null)
+                  OutlinedButton.icon(
+                    onPressed: downloading
+                        ? null
+                        : () => startDownload(AppUpdateDownloadChannel.github),
+                    icon: const Icon(Icons.cloud_download_outlined),
+                    label: Text(
+                      downloading &&
+                              activeDownloadChannel ==
+                                  AppUpdateDownloadChannel.github
+                          ? '下载中'
+                          : 'GitHub更新',
                     ),
-              icon: const Icon(Icons.download_outlined),
-              label: Text(downloading ? '下载中' : '下载更新'),
-            ),
-          ],
-        ),
-      );
-    },
-  );
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  } finally {
+    _appUpdateDialogVisibility[controller] = false;
+  }
 }
 
 Future<void> _openAppUpdateDownload({

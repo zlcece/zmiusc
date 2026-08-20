@@ -168,7 +168,7 @@ void main() {
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
     version: '1.1.1',
-    buildNumber: '28',
+    buildNumber: '29',
     buildSignature: '',
   );
 
@@ -4265,7 +4265,7 @@ plain text
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
         version: '1.1.1',
-        buildNumber: '28',
+        buildNumber: '29',
         buildSignature: '',
       );
     });
@@ -4485,6 +4485,8 @@ plain text
                   'latestVersion': '1.1.2',
                   'versionCode': 29,
                   'downloadUrl': downloadUri.toString(),
+                  'githubDownloadUrl':
+                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.2/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4524,9 +4526,11 @@ plain text
     expect(find.text('当前版本：1.1.1'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
-    expect(find.text('下载更新'), findsOneWidget);
+    expect(find.text('稍后更新'), findsOneWidget);
+    expect(find.text('服务器更新'), findsOneWidget);
+    expect(find.text('GitHub更新'), findsOneWidget);
 
-    await tester.tap(find.text('下载更新'));
+    await tester.tap(find.text('服务器更新'));
     await tester.pump();
 
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
