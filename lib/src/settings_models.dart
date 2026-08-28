@@ -7,6 +7,12 @@ enum CloseButtonBehavior { exit, minimizeToTray }
 
 enum AppLogLevel { error, warning, info, debug }
 
+enum HomePlaybackSection {
+  dailyRecommendation,
+  casualListening,
+  libraryShuffle,
+}
+
 enum HomeShortcutSection {
   favorites,
   myPlaylists,
@@ -20,6 +26,12 @@ enum HomeDiscoverySection {
   recentAlbums,
   frequentAlbums,
 }
+
+const List<HomePlaybackSection> defaultHomePlaybackOrder = [
+  HomePlaybackSection.dailyRecommendation,
+  HomePlaybackSection.casualListening,
+  HomePlaybackSection.libraryShuffle,
+];
 
 const List<HomeShortcutSection> defaultHomeShortcutOrder = [
   HomeShortcutSection.favorites,
@@ -46,8 +58,12 @@ class AppSettings {
     this.launchAtStartup = false,
     this.playRandomAfterSequentialQueue = false,
     this.autoPlayDailyRecommendationOnStartup = false,
+    this.startupPlaybackSection = HomePlaybackSection.dailyRecommendation,
     this.skipUnplayableTracks = true,
     this.showDailyRecommendation = true,
+    this.showCasualListening = true,
+    this.showLibraryShuffle = true,
+    this.homePlaybackOrder = defaultHomePlaybackOrder,
     this.homeShortcutOrder = defaultHomeShortcutOrder,
     this.hiddenHomeShortcuts = const <HomeShortcutSection>{},
     this.homeDiscoveryOrder = defaultHomeDiscoveryOrder,
@@ -67,8 +83,12 @@ class AppSettings {
   final bool launchAtStartup;
   final bool playRandomAfterSequentialQueue;
   final bool autoPlayDailyRecommendationOnStartup;
+  final HomePlaybackSection startupPlaybackSection;
   final bool skipUnplayableTracks;
   final bool showDailyRecommendation;
+  final bool showCasualListening;
+  final bool showLibraryShuffle;
+  final List<HomePlaybackSection> homePlaybackOrder;
   final List<HomeShortcutSection> homeShortcutOrder;
   final Set<HomeShortcutSection> hiddenHomeShortcuts;
   final List<HomeDiscoverySection> homeDiscoveryOrder;
@@ -79,8 +99,26 @@ class AppSettings {
   final AppLogLevel logLevel;
 
   AppSettings get normalized {
+    final normalizedPlaybackOrder = _normalizeEnumOrder(
+      homePlaybackOrder,
+      HomePlaybackSection.values,
+    );
+    final visiblePlaybackOrder = normalizedPlaybackOrder
+        .where(isHomePlaybackVisible)
+        .toList();
+    final normalizedStartupPlaybackSection =
+        visiblePlaybackOrder.contains(startupPlaybackSection)
+        ? startupPlaybackSection
+        : visiblePlaybackOrder.isEmpty
+        ? startupPlaybackSection
+        : visiblePlaybackOrder.first;
     return copyWith(
       cacheSizeBytes: clampCacheSize(cacheSizeBytes),
+      autoPlayDailyRecommendationOnStartup:
+          autoPlayDailyRecommendationOnStartup &&
+          visiblePlaybackOrder.isNotEmpty,
+      startupPlaybackSection: normalizedStartupPlaybackSection,
+      homePlaybackOrder: normalizedPlaybackOrder,
       homeShortcutOrder: _normalizeEnumOrder(
         homeShortcutOrder,
         HomeShortcutSection.values,
@@ -100,12 +138,31 @@ class AppSettings {
     );
   }
 
+  bool isHomePlaybackVisible(HomePlaybackSection section) {
+    return switch (section) {
+      HomePlaybackSection.dailyRecommendation => showDailyRecommendation,
+      HomePlaybackSection.casualListening => showCasualListening,
+      HomePlaybackSection.libraryShuffle => showLibraryShuffle,
+    };
+  }
+
   bool isHomeShortcutVisible(HomeShortcutSection section) {
     return !hiddenHomeShortcuts.contains(section);
   }
 
   bool isHomeDiscoveryVisible(HomeDiscoverySection section) {
     return !hiddenHomeDiscoveries.contains(section);
+  }
+
+  List<HomePlaybackSection> get visibleHomePlaybackOrder {
+    return homePlaybackOrder.where(isHomePlaybackVisible).toList();
+  }
+
+  Set<HomePlaybackSection> get hiddenHomePlaybacks {
+    return {
+      for (final section in HomePlaybackSection.values)
+        if (!isHomePlaybackVisible(section)) section,
+    };
   }
 
   List<HomeShortcutSection> get visibleHomeShortcutOrder {
@@ -133,8 +190,12 @@ class AppSettings {
     bool? launchAtStartup,
     bool? playRandomAfterSequentialQueue,
     bool? autoPlayDailyRecommendationOnStartup,
+    HomePlaybackSection? startupPlaybackSection,
     bool? skipUnplayableTracks,
     bool? showDailyRecommendation,
+    bool? showCasualListening,
+    bool? showLibraryShuffle,
+    List<HomePlaybackSection>? homePlaybackOrder,
     List<HomeShortcutSection>? homeShortcutOrder,
     Set<HomeShortcutSection>? hiddenHomeShortcuts,
     List<HomeDiscoverySection>? homeDiscoveryOrder,
@@ -157,9 +218,14 @@ class AppSettings {
       autoPlayDailyRecommendationOnStartup:
           autoPlayDailyRecommendationOnStartup ??
           this.autoPlayDailyRecommendationOnStartup,
+      startupPlaybackSection:
+          startupPlaybackSection ?? this.startupPlaybackSection,
       skipUnplayableTracks: skipUnplayableTracks ?? this.skipUnplayableTracks,
       showDailyRecommendation:
           showDailyRecommendation ?? this.showDailyRecommendation,
+      showCasualListening: showCasualListening ?? this.showCasualListening,
+      showLibraryShuffle: showLibraryShuffle ?? this.showLibraryShuffle,
+      homePlaybackOrder: homePlaybackOrder ?? this.homePlaybackOrder,
       homeShortcutOrder: homeShortcutOrder ?? this.homeShortcutOrder,
       hiddenHomeShortcuts: hiddenHomeShortcuts ?? this.hiddenHomeShortcuts,
       homeDiscoveryOrder: homeDiscoveryOrder ?? this.homeDiscoveryOrder,
@@ -187,8 +253,14 @@ class AppSettings {
       'playRandomAfterSequentialQueue': playRandomAfterSequentialQueue,
       'autoPlayDailyRecommendationOnStartup':
           autoPlayDailyRecommendationOnStartup,
+      'startupPlaybackSection': startupPlaybackSection.name,
       'skipUnplayableTracks': skipUnplayableTracks,
       'showDailyRecommendation': showDailyRecommendation,
+      'showCasualListening': showCasualListening,
+      'showLibraryShuffle': showLibraryShuffle,
+      'homePlaybackOrder': homePlaybackOrder
+          .map((section) => section.name)
+          .toList(),
       'homeShortcutOrder': homeShortcutOrder
           .map((section) => section.name)
           .toList(),
@@ -236,6 +308,10 @@ class AppSettings {
         'autoPlayDailyRecommendationOnStartup',
         fallback: false,
       ),
+      startupPlaybackSection: HomePlaybackSection.values.firstWhere(
+        (value) => value.name == _readString(json, 'startupPlaybackSection'),
+        orElse: () => HomePlaybackSection.dailyRecommendation,
+      ),
       skipUnplayableTracks: _readBool(
         json,
         'skipUnplayableTracks',
@@ -245,6 +321,18 @@ class AppSettings {
         json,
         'showDailyRecommendation',
         fallback: true,
+      ),
+      showCasualListening: _readBool(
+        json,
+        'showCasualListening',
+        fallback: true,
+      ),
+      showLibraryShuffle: _readBool(json, 'showLibraryShuffle', fallback: true),
+      homePlaybackOrder: _readEnumList(
+        json,
+        'homePlaybackOrder',
+        HomePlaybackSection.values,
+        defaultHomePlaybackOrder,
       ),
       homeShortcutOrder: _readEnumList(
         json,

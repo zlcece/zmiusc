@@ -398,9 +398,7 @@ enum _PlaylistTool { sync, merge, batchAdd }
 
 class _HomePageState extends State<HomePage> {
   final TextEditingController _searchController = TextEditingController();
-  Timer? _libraryStatusTimer;
   Timer? _desktopVolumePersistTimer;
-  String? _libraryStatusMessage;
   bool _wasRefreshingLibrary = false;
   LibrarySearchScope _searchScope = LibrarySearchScope.songs;
   _SearchResultTab _selectedSearchTab = _SearchResultTab.songs;
@@ -425,12 +423,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _libraryStatusMessage = widget.controller.statusMessage;
-    _startLibraryStatusTimer();
     _wasRefreshingLibrary = widget.controller.isRefreshingLibrary;
     widget.controller.addListener(_handleControllerChanged);
     unawaited(_initializePlayerVolume());
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showLibraryStatus(widget.controller.statusMessage);
       unawaited(_checkForUpdateOnStartup());
     });
   }
@@ -438,7 +435,6 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     widget.controller.removeListener(_handleControllerChanged);
-    _libraryStatusTimer?.cancel();
     _desktopVolumePersistTimer?.cancel();
     if (_usesDesktopVolumePersistence) {
       unawaited(widget.controller.saveDesktopPlayerVolume(_volume));
@@ -468,8 +464,6 @@ class _HomePageState extends State<HomePage> {
           );
         }
         final compactTabs = !_usesDesktopHomeTabs(context);
-        final hideTopStatusMessage =
-            MediaQuery.sizeOf(context).width < _mobilePlayerWidthBreakpoint;
         final currentTrack = widget.controller.player.currentTrack;
         final mobileNowPlaying =
             MediaQuery.sizeOf(context).width < _mobilePlayerWidthBreakpoint &&
@@ -493,11 +487,7 @@ class _HomePageState extends State<HomePage> {
                       compact: compactTabs,
                       onChanged: _selectHomeTab,
                     ),
-                    flexibleSpace: _GlassAppBarBackground(
-                      statusMessage: hideTopStatusMessage
-                          ? null
-                          : _libraryStatusMessage,
-                    ),
+                    flexibleSpace: const _GlassAppBarBackground(),
                   ),
             body: Stack(
               children: [
@@ -635,8 +625,11 @@ class _HomePageState extends State<HomePage> {
     final trackCollectionTitle = _activeTrackCollectionTitle;
     if (trackCollectionTitle != null) {
       final isDailyRecommendation = trackCollectionTitle == '每日推荐';
+      final isCasualListening = trackCollectionTitle == '随便听听';
       final tracks = isDailyRecommendation
           ? controller.recommendedTracks
+          : isCasualListening
+          ? controller.casualListeningTracks
           : _activeTrackCollectionTracks;
       return _TrackCollectionPage(
         title: trackCollectionTitle,
@@ -645,16 +638,21 @@ class _HomePageState extends State<HomePage> {
         onBack: _closeActiveDetailPage,
         onRefresh: isDailyRecommendation
             ? _refreshDailyRecommendation
+            : isCasualListening
+            ? _refreshCasualListening
             : trackCollectionTitle == '我喜欢的'
             ? _refreshFavorites
             : null,
-        onPlayAll: isDailyRecommendation && tracks.isNotEmpty
+        onPlayAll:
+            (isDailyRecommendation || isCasualListening) && tracks.isNotEmpty
             ? () => controller.playTrackList(tracks, 0)
             : null,
         onSave: isDailyRecommendation && tracks.isNotEmpty
             ? _saveDailyRecommendation
             : null,
-        isLoading: isDailyRecommendation && controller.isLoadingRecommendations,
+        isLoading:
+            (isDailyRecommendation && controller.isLoadingRecommendations) ||
+            (isCasualListening && controller.isLoadingCasualListening),
       );
     }
 
@@ -788,7 +786,9 @@ class _HomePageState extends State<HomePage> {
       onSuggestionSelected: _openSearchSuggestion,
       onHomeTabChanged: _selectHomeTab,
       onOpenDiscoveryAlbum: _openDiscoveryAlbum,
+      onPlayDiscoverySection: _playDiscoverySection,
       onOpenPlaylist: _openPlaylistDetail,
+      onPlayPlaylist: _playHomePlaylist,
       onOpenTrackCollection: _openTrackCollection,
       onShowLibrarySection: _openLibrarySectionPage,
       onCreatePlaylist: _createPlaylist,
@@ -797,6 +797,9 @@ class _HomePageState extends State<HomePage> {
       onRefreshRadioStations: _refreshRadioStations,
       onOpenDailyRecommendation: _openDailyRecommendation,
       onRefreshDailyRecommendation: _refreshDailyRecommendation,
+      onOpenCasualListening: _openCasualListening,
+      onRefreshCasualListening: _refreshCasualListening,
+      onStartLibraryShuffle: _startLibraryShuffle,
       onRefreshLibrary: _refreshLibrary,
       onOpenPlaylistCollection: _openPlaylistCollection,
       onOpenMetadataManager: _openMetadataManager,
@@ -954,6 +957,70 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Future<void> _playDiscoverySection(
+    HomeDiscoverySection section,
+    List<LibrarySectionItem> albums,
+  ) async {
+    final title = _homeDiscoveryLabel(section);
+    try {
+      final result = await widget.controller.homeDiscoveryTracks(albums);
+      if (!mounted) {
+        return;
+      }
+      if (result.tracks.isEmpty) {
+        _showLibraryStatus(
+          result.failedAlbumCount > 0 ? '$title加载失败。' : '$title暂无可播放歌曲。',
+        );
+        return;
+      }
+      await widget.controller.playTrackList(result.tracks, 0);
+      if (!mounted) {
+        return;
+      }
+      final skipped = result.failedAlbumCount > 0
+          ? '，已跳过 ${result.failedAlbumCount} 张加载失败的专辑'
+          : '';
+      _showLibraryStatus('正在播放$title：${result.tracks.length} 首$skipped。');
+    } catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'library',
+        '播放$title失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (mounted) {
+        _showLibraryStatus('播放失败：${_formatError(error)}');
+      }
+    }
+  }
+
+  Future<void> _playHomePlaylist(LibrarySectionItem playlist) async {
+    try {
+      final tracks = await widget.controller.playlistTracks(playlist);
+      if (!mounted) {
+        return;
+      }
+      if (tracks.isEmpty) {
+        _showLibraryStatus('歌单暂无可播放歌曲。');
+        return;
+      }
+      await widget.controller.playTrackList(tracks, 0);
+      if (mounted) {
+        _showLibraryStatus('正在播放歌单：${playlist.title}。');
+      }
+    } catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'playlist',
+        '播放歌单“${playlist.title}”失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (mounted) {
+        _showLibraryStatus('播放失败：${_formatError(error)}');
+      }
+    }
+  }
+
   Future<void> _openLibraryItem(
     LibrarySectionItem item, {
     String? pageTitle,
@@ -1001,6 +1068,11 @@ class _HomePageState extends State<HomePage> {
     unawaited(widget.controller.ensureDailyRecommendation());
   }
 
+  void _openCasualListening() {
+    _openTrackCollection('随便听听', widget.controller.casualListeningTracks);
+    unawaited(widget.controller.ensureCasualListening());
+  }
+
   Future<void> _playRadioStation(LibrarySectionItem station) async {
     await widget.controller.playRadioStation(station);
     if (!mounted) {
@@ -1041,6 +1113,22 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _refreshDailyRecommendation() async {
     await widget.controller.refreshDailyRecommendation();
+    if (!mounted) {
+      return;
+    }
+    _showLibraryStatus(widget.controller.statusMessage);
+  }
+
+  Future<void> _refreshCasualListening() async {
+    await widget.controller.refreshCasualListening();
+    if (!mounted) {
+      return;
+    }
+    _showLibraryStatus(widget.controller.statusMessage);
+  }
+
+  Future<void> _startLibraryShuffle() async {
+    await widget.controller.startLibraryShuffle();
     if (!mounted) {
       return;
     }
@@ -1119,7 +1207,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _refreshLibrary() async {
-    await widget.controller.loadLibraryOverview();
+    await widget.controller.loadLibraryOverview(refreshHomePlayback: true);
     if (!mounted) {
       return;
     }
@@ -1139,10 +1227,7 @@ class _HomePageState extends State<HomePage> {
     }
     final isRefreshing = widget.controller.isRefreshingLibrary;
     if (!_wasRefreshingLibrary && isRefreshing) {
-      _libraryStatusTimer?.cancel();
-      if (_libraryStatusMessage != null && mounted) {
-        setState(() => _libraryStatusMessage = null);
-      }
+      ScaffoldMessenger.maybeOf(context)?.removeCurrentSnackBar();
     }
     if (_wasRefreshingLibrary && !isRefreshing) {
       _showLibraryStatus(widget.controller.statusMessage);
@@ -1154,20 +1239,7 @@ class _HomePageState extends State<HomePage> {
     if (message == null || message.isEmpty || !mounted) {
       return;
     }
-    setState(() => _libraryStatusMessage = message);
-    _startLibraryStatusTimer();
-  }
-
-  void _startLibraryStatusTimer() {
-    if (_libraryStatusMessage == null) {
-      return;
-    }
-    _libraryStatusTimer?.cancel();
-    _libraryStatusTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() => _libraryStatusMessage = null);
-      }
-    });
+    _showSourceMessage(context, message);
   }
 
   Future<void> _checkForUpdateOnStartup() async {
@@ -1652,25 +1724,15 @@ class _DefaultBrandBackgroundImage extends StatelessWidget {
 }
 
 class _GlassAppBarBackground extends StatelessWidget {
-  const _GlassAppBarBackground({this.statusMessage});
-
-  final String? statusMessage;
+  const _GlassAppBarBackground();
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: _glassFillColor(context, lightAlpha: 0.62, darkAlpha: 0.34),
-            border: Border(
-              bottom: BorderSide(color: _glassBorderColor(context)),
-            ),
-          ),
-        ),
-        _TopStatusMessage(message: statusMessage),
-      ],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: _glassFillColor(context, lightAlpha: 0.62, darkAlpha: 0.34),
+        border: Border(bottom: BorderSide(color: _glassBorderColor(context))),
+      ),
     );
   }
 }
@@ -1831,43 +1893,6 @@ List<BoxShadow> _glassShadow(BuildContext context) {
   ];
 }
 
-class _TopStatusMessage extends StatelessWidget {
-  const _TopStatusMessage({required this.message});
-
-  final String? message;
-
-  @override
-  Widget build(BuildContext context) {
-    final text = message ?? '';
-    final isCompact = MediaQuery.sizeOf(context).width < 760;
-    final style = Theme.of(context).textTheme.labelLarge?.copyWith(
-      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.78),
-    );
-
-    return IgnorePointer(
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: Padding(
-          padding: EdgeInsets.only(
-            left: isCompact ? 120 : 360,
-            right: isCompact ? 16 : 28,
-          ),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: isCompact ? 220 : 360),
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: style,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _SettingsPage extends StatefulWidget {
   const _SettingsPage({
     required this.controller,
@@ -1994,6 +2019,18 @@ class _SettingsPageState extends State<_SettingsPage> {
                     _SettingsSection(
                       title: '首页布局',
                       children: [
+                        _HomeLayoutOrderEditor<HomePlaybackSection>(
+                          title: '推荐播放',
+                          itemKeyPrefix: 'home-playback',
+                          items: _settings.homePlaybackOrder,
+                          hiddenItems: _settings.hiddenHomePlaybacks,
+                          labelFor: _homePlaybackLabel,
+                          onMove: _moveHomePlayback,
+                          onAllVisibilityChanged:
+                              _setAllHomePlaybacksVisibility,
+                          onVisibilityChanged: _setHomePlaybackVisibility,
+                        ),
+                        const Divider(height: 1),
                         _HomeLayoutOrderEditor<HomeShortcutSection>(
                           title: '快捷入口',
                           itemKeyPrefix: 'home-shortcut',
@@ -2004,19 +2041,6 @@ class _SettingsPageState extends State<_SettingsPage> {
                           onAllVisibilityChanged:
                               _setAllHomeShortcutsVisibility,
                           onVisibilityChanged: _setHomeShortcutVisibility,
-                          groupVisible:
-                              _settings.showDailyRecommendation ||
-                              _settings.hiddenHomeShortcuts.length <
-                                  _settings.homeShortcutOrder.length,
-                          leadingItem: CompactSwitchListTile(
-                            key: const ValueKey(
-                              'home-daily-recommendation-visible',
-                            ),
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text('每日推荐'),
-                            value: _settings.showDailyRecommendation,
-                            onChanged: _setDailyRecommendationVisibility,
-                          ),
                         ),
                         const Divider(height: 1),
                         _HomeLayoutOrderEditor<HomeDiscoverySection>(
@@ -2115,17 +2139,47 @@ class _SettingsPageState extends State<_SettingsPage> {
                           key: const ValueKey(
                             'auto-play-daily-recommendation-on-startup',
                           ),
-                          title: const Text('启动后自动播放每日推荐'),
-                          subtitle: const Text('登录并加载完成后，自动替换播放队列并从第一首开始播放'),
+                          title: const Text('启动后自动播放'),
+                          subtitle: const Text('登录并加载完成后，自动播放选中的首页推荐入口'),
                           value: _settings.autoPlayDailyRecommendationOnStartup,
-                          onChanged: (value) => unawaited(
-                            _saveSettings(
-                              _settings.copyWith(
-                                autoPlayDailyRecommendationOnStartup: value,
-                              ),
+                          onChanged: _settings.visibleHomePlaybackOrder.isEmpty
+                              ? null
+                              : (value) => unawaited(
+                                  _saveSettings(
+                                    _settings.copyWith(
+                                      autoPlayDailyRecommendationOnStartup:
+                                          value,
+                                    ),
+                                  ),
+                                ),
+                        ),
+                        if (_settings.autoPlayDailyRecommendationOnStartup &&
+                            _settings.visibleHomePlaybackOrder.isNotEmpty)
+                          RadioGroup<HomePlaybackSection>(
+                            groupValue: _settings.startupPlaybackSection,
+                            onChanged: (value) {
+                              if (value != null) {
+                                unawaited(
+                                  _saveSettings(
+                                    _settings.copyWith(
+                                      startupPlaybackSection: value,
+                                    ),
+                                  ),
+                                );
+                              }
+                            },
+                            child: Column(
+                              children: [
+                                for (final section
+                                    in _settings.visibleHomePlaybackOrder)
+                                  RadioListTile<HomePlaybackSection>(
+                                    dense: true,
+                                    value: section,
+                                    title: Text(_homePlaybackLabel(section)),
+                                  ),
+                              ],
                             ),
                           ),
-                        ),
                         CompactSwitchListTile(
                           key: const ValueKey('skip-unplayable-tracks'),
                           title: const Text('播放失败自动切歌'),
@@ -2485,6 +2539,15 @@ class _SettingsPageState extends State<_SettingsPage> {
     }
   }
 
+  void _moveHomePlayback(HomePlaybackSection section, int offset) {
+    final order = _moveOrderedItem(
+      _settings.homePlaybackOrder,
+      section,
+      offset,
+    );
+    unawaited(_saveSettings(_settings.copyWith(homePlaybackOrder: order)));
+  }
+
   void _moveHomeShortcut(HomeShortcutSection section, int offset) {
     final order = _moveOrderedItem(
       _settings.homeShortcutOrder,
@@ -2509,9 +2572,30 @@ class _SettingsPageState extends State<_SettingsPage> {
     unawaited(_saveSettings(_settings.copyWith(hiddenHomeShortcuts: hidden)));
   }
 
-  void _setDailyRecommendationVisibility(bool visible) {
+  void _setHomePlaybackVisibility(HomePlaybackSection section, bool visible) {
+    final updated = switch (section) {
+      HomePlaybackSection.dailyRecommendation => _settings.copyWith(
+        showDailyRecommendation: visible,
+      ),
+      HomePlaybackSection.casualListening => _settings.copyWith(
+        showCasualListening: visible,
+      ),
+      HomePlaybackSection.libraryShuffle => _settings.copyWith(
+        showLibraryShuffle: visible,
+      ),
+    };
+    unawaited(_saveSettings(updated));
+  }
+
+  void _setAllHomePlaybacksVisibility(bool visible) {
     unawaited(
-      _saveSettings(_settings.copyWith(showDailyRecommendation: visible)),
+      _saveSettings(
+        _settings.copyWith(
+          showDailyRecommendation: visible,
+          showCasualListening: visible,
+          showLibraryShuffle: visible,
+        ),
+      ),
     );
   }
 
@@ -2519,7 +2603,6 @@ class _SettingsPageState extends State<_SettingsPage> {
     unawaited(
       _saveSettings(
         _settings.copyWith(
-          showDailyRecommendation: visible,
           hiddenHomeShortcuts: visible
               ? <HomeShortcutSection>{}
               : HomeShortcutSection.values.toSet(),
@@ -3275,8 +3358,6 @@ class _HomeLayoutOrderEditor<T extends Enum> extends StatelessWidget {
     required this.onMove,
     required this.onAllVisibilityChanged,
     required this.onVisibilityChanged,
-    this.groupVisible,
-    this.leadingItem,
   });
 
   final String title;
@@ -3287,12 +3368,10 @@ class _HomeLayoutOrderEditor<T extends Enum> extends StatelessWidget {
   final void Function(T item, int offset) onMove;
   final ValueChanged<bool> onAllVisibilityChanged;
   final void Function(T item, bool visible) onVisibilityChanged;
-  final bool? groupVisible;
-  final Widget? leadingItem;
 
   @override
   Widget build(BuildContext context) {
-    final showItems = groupVisible ?? hiddenItems.length < items.length;
+    final showItems = hiddenItems.length < items.length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Column(
@@ -3313,7 +3392,6 @@ class _HomeLayoutOrderEditor<T extends Enum> extends StatelessWidget {
               ),
             ],
           ),
-          if (showItems && leadingItem != null) leadingItem!,
           if (showItems)
             for (var index = 0; index < items.length; index++)
               _HomeLayoutOrderRow<T>(
@@ -3413,6 +3491,14 @@ List<T> _moveOrderedItem<T>(List<T> order, T item, int offset) {
   result.removeAt(currentIndex);
   result.insert(targetIndex, item);
   return result;
+}
+
+String _homePlaybackLabel(HomePlaybackSection section) {
+  return switch (section) {
+    HomePlaybackSection.dailyRecommendation => '每日推荐',
+    HomePlaybackSection.casualListening => '随便听听',
+    HomePlaybackSection.libraryShuffle => '曲库随机',
+  };
 }
 
 String _homeShortcutLabel(HomeShortcutSection section) {
@@ -4079,7 +4165,7 @@ class _RemotePlaylistHeader extends StatefulWidget {
   final List<Track> tracks;
   final bool isLoading;
   final bool canManage;
-  final VoidCallback? onPlayAll;
+  final Future<void> Function()? onPlayAll;
   final VoidCallback onAddTracks;
   final bool batchRemoving;
   final int batchRemoveCount;
@@ -4203,12 +4289,22 @@ class _RemotePlaylistHeaderState extends State<_RemotePlaylistHeader> {
           children: [
             KeyedSubtree(
               key: const ValueKey('remote-playlist-artwork'),
-              child: _PlayableArtwork(
-                onPlay: widget.onPlayAll,
-                artwork: _RemotePlaylistCover(
-                  playlist: widget.playlist,
-                  size: artworkSize,
-                ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  _RemotePlaylistCover(
+                    playlist: widget.playlist,
+                    size: artworkSize,
+                  ),
+                  _AsyncPlayButton(
+                    key: const ValueKey('artwork-play-all'),
+                    tooltip: '播放全部',
+                    onPressed: widget.onPlayAll,
+                    artworkOverlay: true,
+                    size: compact ? 24 : 30,
+                    iconSize: compact ? 17 : 21,
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 4),
@@ -4545,7 +4641,9 @@ class _LibraryHome extends StatelessWidget {
     required this.onSuggestionSelected,
     required this.onHomeTabChanged,
     required this.onOpenDiscoveryAlbum,
+    required this.onPlayDiscoverySection,
     required this.onOpenPlaylist,
+    required this.onPlayPlaylist,
     required this.onOpenTrackCollection,
     required this.onShowLibrarySection,
     required this.onCreatePlaylist,
@@ -4554,6 +4652,9 @@ class _LibraryHome extends StatelessWidget {
     required this.onRefreshRadioStations,
     required this.onOpenDailyRecommendation,
     required this.onRefreshDailyRecommendation,
+    required this.onOpenCasualListening,
+    required this.onRefreshCasualListening,
+    required this.onStartLibraryShuffle,
     required this.onRefreshLibrary,
     required this.onOpenPlaylistCollection,
     required this.onOpenMetadataManager,
@@ -4573,7 +4674,13 @@ class _LibraryHome extends StatelessWidget {
     LibrarySectionItem item,
   )
   onOpenDiscoveryAlbum;
+  final Future<void> Function(
+    HomeDiscoverySection section,
+    List<LibrarySectionItem> albums,
+  )
+  onPlayDiscoverySection;
   final Future<void> Function(LibrarySectionItem item) onOpenPlaylist;
+  final Future<void> Function(LibrarySectionItem item) onPlayPlaylist;
   final void Function(String title, List<Track> tracks) onOpenTrackCollection;
   final ValueChanged<LibrarySectionType> onShowLibrarySection;
   final VoidCallback onCreatePlaylist;
@@ -4582,6 +4689,9 @@ class _LibraryHome extends StatelessWidget {
   final Future<void> Function() onRefreshRadioStations;
   final VoidCallback onOpenDailyRecommendation;
   final Future<void> Function() onRefreshDailyRecommendation;
+  final VoidCallback onOpenCasualListening;
+  final Future<void> Function() onRefreshCasualListening;
+  final Future<void> Function() onStartLibraryShuffle;
   final Future<void> Function() onRefreshLibrary;
   final ValueChanged<_PlaylistCollection> onOpenPlaylistCollection;
   final VoidCallback onOpenMetadataManager;
@@ -4629,7 +4739,9 @@ class _LibraryHome extends StatelessWidget {
                 _HomeTab.music => _MusicHomeTab(
                   controller: controller,
                   onOpenDiscoveryAlbum: onOpenDiscoveryAlbum,
+                  onPlayDiscoverySection: onPlayDiscoverySection,
                   onOpenPlaylist: onOpenPlaylist,
+                  onPlayPlaylist: onPlayPlaylist,
                   onOpenTrackCollection: onOpenTrackCollection,
                   onShowLibrarySection: onShowLibrarySection,
                   onCreatePlaylist: onCreatePlaylist,
@@ -4638,6 +4750,9 @@ class _LibraryHome extends StatelessWidget {
                   onRefreshRadioStations: onRefreshRadioStations,
                   onOpenDailyRecommendation: onOpenDailyRecommendation,
                   onRefreshDailyRecommendation: onRefreshDailyRecommendation,
+                  onOpenCasualListening: onOpenCasualListening,
+                  onRefreshCasualListening: onRefreshCasualListening,
+                  onStartLibraryShuffle: onStartLibraryShuffle,
                   onOpenPlaylistCollection: onOpenPlaylistCollection,
                 ),
                 _HomeTab.settings => _SettingsPage(
@@ -4791,12 +4906,14 @@ class _DiscoveryAlbumSection extends StatelessWidget {
     required this.emptyText,
     required this.items,
     required this.onTap,
+    required this.onPlayAll,
   });
 
   final String title;
   final String emptyText;
   final List<LibrarySectionItem> items;
   final Future<void> Function(LibrarySectionItem item) onTap;
+  final Future<void> Function() onPlayAll;
 
   @override
   Widget build(BuildContext context) {
@@ -4811,6 +4928,11 @@ class _DiscoveryAlbumSection extends StatelessWidget {
         expanded: false,
         showToggle: false,
         showCount: false,
+        titleAction: _AsyncPlayButton(
+          key: ValueKey('play-discovery-$title'),
+          tooltip: '播放$title',
+          onPressed: items.isEmpty ? null : onPlayAll,
+        ),
         onToggle: () {},
         onTap: (item) => unawaited(onTap(item)),
       ),
@@ -4852,7 +4974,9 @@ class _MusicHomeTab extends StatelessWidget {
   const _MusicHomeTab({
     required this.controller,
     required this.onOpenDiscoveryAlbum,
+    required this.onPlayDiscoverySection,
     required this.onOpenPlaylist,
+    required this.onPlayPlaylist,
     required this.onOpenTrackCollection,
     required this.onShowLibrarySection,
     required this.onCreatePlaylist,
@@ -4861,6 +4985,9 @@ class _MusicHomeTab extends StatelessWidget {
     required this.onRefreshRadioStations,
     required this.onOpenDailyRecommendation,
     required this.onRefreshDailyRecommendation,
+    required this.onOpenCasualListening,
+    required this.onRefreshCasualListening,
+    required this.onStartLibraryShuffle,
     required this.onOpenPlaylistCollection,
   });
 
@@ -4870,7 +4997,13 @@ class _MusicHomeTab extends StatelessWidget {
     LibrarySectionItem item,
   )
   onOpenDiscoveryAlbum;
+  final Future<void> Function(
+    HomeDiscoverySection section,
+    List<LibrarySectionItem> albums,
+  )
+  onPlayDiscoverySection;
   final Future<void> Function(LibrarySectionItem item) onOpenPlaylist;
+  final Future<void> Function(LibrarySectionItem item) onPlayPlaylist;
   final void Function(String title, List<Track> tracks) onOpenTrackCollection;
   final ValueChanged<LibrarySectionType> onShowLibrarySection;
   final VoidCallback onCreatePlaylist;
@@ -4879,6 +5012,9 @@ class _MusicHomeTab extends StatelessWidget {
   final Future<void> Function() onRefreshRadioStations;
   final VoidCallback onOpenDailyRecommendation;
   final Future<void> Function() onRefreshDailyRecommendation;
+  final VoidCallback onOpenCasualListening;
+  final Future<void> Function() onRefreshCasualListening;
+  final Future<void> Function() onStartLibraryShuffle;
   final ValueChanged<_PlaylistCollection> onOpenPlaylistCollection;
 
   @override
@@ -4909,11 +5045,13 @@ class _MusicHomeTab extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (settings.showDailyRecommendation ||
+                if (settings.visibleHomePlaybackOrder.isNotEmpty ||
                     settings.visibleHomeShortcutOrder.isNotEmpty) ...[
                   _MusicFunctionGrid(
                     controller: controller,
                     onOpenDailyRecommendation: onOpenDailyRecommendation,
+                    onOpenCasualListening: onOpenCasualListening,
+                    onStartLibraryShuffle: onStartLibraryShuffle,
                     onOpenFavorites: () => onOpenTrackCollection(
                       '我喜欢的',
                       controller.libraryOverview.favoriteTracks,
@@ -4928,6 +5066,7 @@ class _MusicHomeTab extends StatelessWidget {
                     onRefreshPlaylists: onRefreshPlaylists,
                     onRefreshRadioStations: onRefreshRadioStations,
                     onRefreshDailyRecommendation: onRefreshDailyRecommendation,
+                    onRefreshCasualListening: onRefreshCasualListening,
                   ),
                   SizedBox(height: compact ? 10 : 28),
                 ],
@@ -4967,6 +5106,7 @@ class _MusicHomeTab extends StatelessWidget {
                       ),
                       onToggle: () {},
                       onTap: (item) => unawaited(onOpenPlaylist(item)),
+                      onPlay: onPlayPlaylist,
                     ),
                   ),
                 if (settings.showPublicPlaylistSection)
@@ -4988,6 +5128,7 @@ class _MusicHomeTab extends StatelessWidget {
                       ),
                       onToggle: () {},
                       onTap: (item) => unawaited(onOpenPlaylist(item)),
+                      onPlay: onPlayPlaylist,
                     ),
                   ),
               ],
@@ -5008,24 +5149,34 @@ class _MusicHomeTab extends StatelessWidget {
             ? overview.albums
             : overview.latestAlbums,
         onTap: (item) => onOpenDiscoveryAlbum(section, item),
+        onPlayAll: () => onPlayDiscoverySection(
+          section,
+          overview.latestAlbums.isEmpty
+              ? overview.albums
+              : overview.latestAlbums,
+        ),
       ),
       HomeDiscoverySection.randomAlbums => _DiscoveryAlbumSection(
         title: '随机专辑',
         emptyText: '暂无随机专辑',
         items: overview.randomAlbums,
         onTap: (item) => onOpenDiscoveryAlbum(section, item),
+        onPlayAll: () => onPlayDiscoverySection(section, overview.randomAlbums),
       ),
       HomeDiscoverySection.recentAlbums => _DiscoveryAlbumSection(
         title: '最近播放',
         emptyText: '暂无最近播放信息',
         items: overview.recentAlbums,
         onTap: (item) => onOpenDiscoveryAlbum(section, item),
+        onPlayAll: () => onPlayDiscoverySection(section, overview.recentAlbums),
       ),
       HomeDiscoverySection.frequentAlbums => _DiscoveryAlbumSection(
         title: '最多播放',
         emptyText: '暂无最多播放信息',
         items: overview.frequentAlbums,
         onTap: (item) => onOpenDiscoveryAlbum(section, item),
+        onPlayAll: () =>
+            onPlayDiscoverySection(section, overview.frequentAlbums),
       ),
     };
   }
@@ -5122,6 +5273,8 @@ class _MusicFunctionGrid extends StatelessWidget {
   const _MusicFunctionGrid({
     required this.controller,
     required this.onOpenDailyRecommendation,
+    required this.onOpenCasualListening,
+    required this.onStartLibraryShuffle,
     required this.onOpenFavorites,
     required this.onShowMyPlaylists,
     required this.onShowPublicPlaylists,
@@ -5130,10 +5283,13 @@ class _MusicFunctionGrid extends StatelessWidget {
     required this.onRefreshPlaylists,
     required this.onRefreshRadioStations,
     required this.onRefreshDailyRecommendation,
+    required this.onRefreshCasualListening,
   });
 
   final AppController controller;
   final VoidCallback onOpenDailyRecommendation;
+  final VoidCallback onOpenCasualListening;
+  final Future<void> Function() onStartLibraryShuffle;
   final VoidCallback onOpenFavorites;
   final VoidCallback onShowMyPlaylists;
   final VoidCallback onShowPublicPlaylists;
@@ -5142,10 +5298,11 @@ class _MusicFunctionGrid extends StatelessWidget {
   final Future<void> Function() onRefreshPlaylists;
   final Future<void> Function() onRefreshRadioStations;
   final Future<void> Function() onRefreshDailyRecommendation;
+  final Future<void> Function() onRefreshCasualListening;
 
   @override
   Widget build(BuildContext context) {
-    final entries = <HomeShortcutSection, _MusicFunctionEntry>{
+    final shortcutEntries = <HomeShortcutSection, _MusicFunctionEntry>{
       HomeShortcutSection.favorites: _MusicFunctionEntry(
         icon: Icons.favorite,
         label: '我喜欢的',
@@ -5181,77 +5338,87 @@ class _MusicFunctionGrid extends StatelessWidget {
         onRefresh: onRefreshRadioStations,
       ),
     };
-    final items = [
+    final shortcutItems = [
       for (final section in controller.settings.visibleHomeShortcutOrder)
-        entries[section]!,
+        shortcutEntries[section]!,
     ];
-    final recommendation = _MusicFunctionEntry(
-      icon: Icons.auto_awesome_rounded,
-      label: '每日推荐',
-      subtitle: controller.isLoadingRecommendations
-          ? '生成中'
-          : '${controller.recommendedTracks.length} 首',
-      onTap: onOpenDailyRecommendation,
-      onPlay: controller.recommendedTracks.isEmpty
-          ? null
-          : () => controller.playTrackList(controller.recommendedTracks, 0),
-      onRefresh: onRefreshDailyRecommendation,
-      isRefreshing: controller.isLoadingRecommendations,
-    );
+    final playbackEntries = <HomePlaybackSection, _MusicFunctionEntry>{
+      HomePlaybackSection.dailyRecommendation: _MusicFunctionEntry(
+        icon: Icons.auto_awesome_rounded,
+        label: '每日推荐',
+        subtitle: controller.isLoadingRecommendations
+            ? '生成中'
+            : '${controller.recommendedTracks.length} 首',
+        onTap: onOpenDailyRecommendation,
+        onPlay: controller.recommendedTracks.isEmpty
+            ? null
+            : () => controller.playTrackList(controller.recommendedTracks, 0),
+        onRefresh: onRefreshDailyRecommendation,
+        isRefreshing: controller.isLoadingRecommendations,
+      ),
+      HomePlaybackSection.casualListening: _MusicFunctionEntry(
+        icon: Icons.explore_outlined,
+        label: '随便听听',
+        subtitle: controller.isLoadingCasualListening
+            ? '生成中'
+            : '${controller.casualListeningTracks.length} 首',
+        onTap: onOpenCasualListening,
+        onPlay: controller.casualListeningTracks.isEmpty
+            ? null
+            : () =>
+                  controller.playTrackList(controller.casualListeningTracks, 0),
+        onRefresh: onRefreshCasualListening,
+        isRefreshing: controller.isLoadingCasualListening,
+      ),
+      HomePlaybackSection.libraryShuffle: _MusicFunctionEntry(
+        icon: Icons.casino_outlined,
+        label: '曲库随机',
+        subtitle: controller.isLoadingLibraryShuffle ? '准备中' : '连续随机播放',
+        onTap: () => unawaited(onStartLibraryShuffle()),
+        onPlay: controller.isLoadingLibraryShuffle
+            ? null
+            : onStartLibraryShuffle,
+      ),
+    };
+    final playbackItems = [
+      for (final section in controller.settings.visibleHomePlaybackOrder)
+        playbackEntries[section]!,
+    ];
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = _isPhoneWidth(context);
         final spacing = compact ? 8.0 : 12.0;
-        final showRecommendation = controller.settings.showDailyRecommendation;
-        if (compact) {
-          final itemWidth = (constraints.maxWidth - spacing) / 2;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+        Widget buildGroup(List<_MusicFunctionEntry> items, int maxColumns) {
+          final availableColumns = compact
+              ? 2
+              : constraints.maxWidth >= 620
+              ? maxColumns
+              : 2;
+          final columns = math.min(availableColumns, items.length);
+          final itemWidth =
+              (constraints.maxWidth - spacing * (columns - 1)) / columns;
+          return Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
             children: [
-              if (showRecommendation)
+              for (final item in items)
                 SizedBox(
-                  key: const ValueKey('music-function-每日推荐'),
-                  child: _MusicFunctionTile(entry: recommendation),
-                ),
-              if (showRecommendation && items.isNotEmpty)
-                SizedBox(height: spacing),
-              if (items.isNotEmpty)
-                Wrap(
-                  spacing: spacing,
-                  runSpacing: spacing,
-                  children: [
-                    for (final item in items)
-                      SizedBox(
-                        key: ValueKey('music-function-${item.label}'),
-                        width: itemWidth,
-                        child: _MusicFunctionTile(entry: item),
-                      ),
-                  ],
+                  key: ValueKey('music-function-${item.label}'),
+                  width: itemWidth,
+                  child: _MusicFunctionTile(entry: item),
                 ),
             ],
           );
         }
 
-        final allItems = [if (showRecommendation) recommendation, ...items];
-        final maxColumns = constraints.maxWidth >= 900
-            ? 5
-            : constraints.maxWidth >= 620
-            ? 3
-            : 2;
-        final columns = math.min(maxColumns, allItems.length);
-        final itemWidth =
-            (constraints.maxWidth - spacing * (columns - 1)) / columns;
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final item in allItems)
-              SizedBox(
-                key: ValueKey('music-function-${item.label}'),
-                width: itemWidth,
-                child: _MusicFunctionTile(entry: item),
-              ),
+            if (playbackItems.isNotEmpty) buildGroup(playbackItems, 3),
+            if (playbackItems.isNotEmpty && shortcutItems.isNotEmpty)
+              SizedBox(height: spacing),
+            if (shortcutItems.isNotEmpty) buildGroup(shortcutItems, 4),
           ],
         );
       },
@@ -6496,7 +6663,9 @@ class _LibraryPreviewSection extends StatelessWidget {
     required this.onTap,
     this.showToggle = true,
     this.showCount = true,
+    this.titleAction,
     this.action,
+    this.onPlay,
   });
 
   final String title;
@@ -6509,7 +6678,9 @@ class _LibraryPreviewSection extends StatelessWidget {
   final ValueChanged<LibrarySectionItem> onTap;
   final bool showToggle;
   final bool showCount;
+  final Widget? titleAction;
   final Widget? action;
+  final Future<void> Function(LibrarySectionItem item)? onPlay;
 
   @override
   Widget build(BuildContext context) {
@@ -6525,6 +6696,7 @@ class _LibraryPreviewSection extends StatelessWidget {
           _LibrarySectionHeader(
             title: title,
             countText: showCount && items.isNotEmpty ? '${items.length}' : null,
+            titleAction: titleAction,
             action:
                 _headerAction(
                   showToggle: showToggle,
@@ -6563,6 +6735,7 @@ class _LibraryPreviewSection extends StatelessWidget {
                           icon: icon,
                           style: style,
                           onTap: () => onTap(item),
+                          onPlay: onPlay == null ? null : () => onPlay!(item),
                         ),
                       ),
                   ],
@@ -6590,11 +6763,13 @@ class _LibrarySectionHeader extends StatelessWidget {
   const _LibrarySectionHeader({
     required this.title,
     this.countText,
+    this.titleAction,
     this.action,
   });
 
   final String title;
   final String? countText;
+  final Widget? titleAction;
   final Widget? action;
 
   @override
@@ -6612,6 +6787,10 @@ class _LibrarySectionHeader extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
+              if (titleAction != null) ...[
+                const SizedBox(width: 2),
+                titleAction!,
+              ],
               if (countText != null) ...[
                 const SizedBox(width: 8),
                 Text(
@@ -6628,18 +6807,95 @@ class _LibrarySectionHeader extends StatelessWidget {
   }
 }
 
+class _AsyncPlayButton extends StatefulWidget {
+  const _AsyncPlayButton({
+    required this.tooltip,
+    required this.onPressed,
+    this.artworkOverlay = false,
+    this.size = 30,
+    this.iconSize = 20,
+    super.key,
+  });
+
+  final String tooltip;
+  final Future<void> Function()? onPressed;
+  final bool artworkOverlay;
+  final double size;
+  final double iconSize;
+
+  @override
+  State<_AsyncPlayButton> createState() => _AsyncPlayButtonState();
+}
+
+class _AsyncPlayButtonState extends State<_AsyncPlayButton> {
+  bool _isRunning = false;
+
+  Future<void> _run() async {
+    final onPressed = widget.onPressed;
+    if (_isRunning || onPressed == null) {
+      return;
+    }
+    setState(() => _isRunning = true);
+    try {
+      await onPressed();
+    } finally {
+      if (mounted) {
+        setState(() => _isRunning = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final foreground = widget.artworkOverlay
+        ? Colors.white
+        : colorScheme.primary;
+    return IconButton(
+      tooltip: widget.tooltip,
+      style: IconButton.styleFrom(
+        fixedSize: Size.square(widget.size),
+        minimumSize: Size.square(widget.size),
+        padding: EdgeInsets.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: foreground,
+        disabledForegroundColor: foreground.withValues(alpha: 0.65),
+        backgroundColor: widget.artworkOverlay
+            ? Colors.black.withValues(alpha: 0.46)
+            : Colors.transparent,
+      ),
+      constraints: BoxConstraints.tightFor(
+        width: widget.size,
+        height: widget.size,
+      ),
+      onPressed: _isRunning || widget.onPressed == null ? null : _run,
+      icon: _isRunning
+          ? SizedBox.square(
+              dimension: widget.iconSize * 0.72,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: foreground,
+              ),
+            )
+          : Icon(Icons.play_arrow_rounded, size: widget.iconSize),
+    );
+  }
+}
+
 class _LibraryPreviewTile extends StatelessWidget {
   const _LibraryPreviewTile({
     required this.item,
     required this.icon,
     required this.style,
     required this.onTap,
+    this.onPlay,
   });
 
   final LibrarySectionItem item;
   final IconData icon;
   final _LibraryPreviewStyle style;
   final VoidCallback onTap;
+  final Future<void> Function()? onPlay;
 
   @override
   Widget build(BuildContext context) {
@@ -6673,11 +6929,26 @@ class _LibraryPreviewTile extends StatelessWidget {
                   ),
                   child: Row(
                     children: [
-                      _LibraryItemArtwork(
-                        item: item,
-                        fallbackIcon: icon,
-                        size: artworkSize,
-                        circle: isArtist,
+                      Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          _LibraryItemArtwork(
+                            item: item,
+                            fallbackIcon: icon,
+                            size: artworkSize,
+                            circle: isArtist,
+                          ),
+                          if (style == _LibraryPreviewStyle.playlist &&
+                              onPlay != null)
+                            _AsyncPlayButton(
+                              key: ValueKey('play-playlist-${item.id}'),
+                              tooltip: '播放${item.title}',
+                              onPressed: onPlay,
+                              artworkOverlay: true,
+                              size: compact ? 24 : 30,
+                              iconSize: compact ? 17 : 21,
+                            ),
+                        ],
                       ),
                       SizedBox(width: compact ? 7 : 10),
                       Expanded(
@@ -8769,6 +9040,9 @@ class _QueueSheet extends StatelessWidget {
 }
 
 Future<void> _showQueueSheet(BuildContext context, AppController controller) {
+  if (controller.isLibraryShuffleActive) {
+    return Future<void>.value();
+  }
   final barrierLabel = MaterialLocalizations.of(
     context,
   ).modalBarrierDismissLabel;
@@ -9021,7 +9295,22 @@ class _PlayerBar extends StatelessWidget {
                             : Icons.play_arrow,
                       ),
                     ),
-                    _QueueButton(controller: controller, compact: true),
+                    if (controller.isLibraryShuffleActive)
+                      IconButton(
+                        tooltip: '下一首',
+                        constraints: const BoxConstraints.tightFor(
+                          width: 38,
+                          height: 38,
+                        ),
+                        padding: EdgeInsets.zero,
+                        iconSize: 24,
+                        onPressed: controller.player.canSkipNext
+                            ? controller.player.playNext
+                            : null,
+                        icon: const Icon(Icons.skip_next_rounded),
+                      )
+                    else
+                      _QueueButton(controller: controller, compact: true),
                   ],
                 ),
               ),
@@ -9261,6 +9550,16 @@ class _QueueButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const tooltip = '列表';
+    if (controller.isLibraryShuffleActive) {
+      return SizedBox(
+        width: compact
+            ? 38
+            : extended
+            ? 52
+            : 48,
+        height: compact ? 38 : 42,
+      );
+    }
     if (extended) {
       return Tooltip(
         message: tooltip,
@@ -9532,9 +9831,13 @@ class _PlaybackModeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final player = controller.player;
-    final playbackMode = player.playbackMode;
+    final playbackMode = controller.isLibraryShuffleActive
+        ? PlaybackMode.shuffle
+        : player.playbackMode;
     final currentTrack = player.currentTrack;
-    final disabled = currentTrack != null && isRadioTrack(currentTrack);
+    final disabled =
+        controller.isLibraryShuffleActive ||
+        (currentTrack != null && isRadioTrack(currentTrack));
     return IconButton(
       tooltip: _playbackModeTooltip(playbackMode),
       onPressed: disabled
@@ -10120,7 +10423,15 @@ const double _androidHdWidthBreakpoint = 510;
 const double _mobilePlayerWidthBreakpoint = 600;
 
 void _showSourceMessage(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (messenger == null) {
+    return;
+  }
+  messenger
+    ..removeCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(duration: const Duration(seconds: 2), content: Text(message)),
+    );
 }
 
 bool _isPhoneWidth(BuildContext context) {

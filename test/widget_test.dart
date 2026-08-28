@@ -167,8 +167,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.1.1',
-    buildNumber: '29',
+    version: '1.1.2',
+    buildNumber: '30',
     buildSignature: '',
   );
 
@@ -2181,6 +2181,7 @@ void main() {
           ..selectedServerId = server.id
           ..settings = const AppSettings(
             showDailyRecommendation: false,
+            showCasualListening: false,
             hiddenHomeShortcuts: {
               HomeShortcutSection.favorites,
               HomeShortcutSection.myPlaylists,
@@ -2791,6 +2792,13 @@ plain text
   test('stores and normalizes the configurable home layout', () {
     const settings = AppSettings(
       showDailyRecommendation: false,
+      showCasualListening: false,
+      homePlaybackOrder: [
+        HomePlaybackSection.libraryShuffle,
+        HomePlaybackSection.dailyRecommendation,
+        HomePlaybackSection.casualListening,
+      ],
+      startupPlaybackSection: HomePlaybackSection.libraryShuffle,
       homeShortcutOrder: [
         HomeShortcutSection.publicRadio,
         HomeShortcutSection.favorites,
@@ -2812,22 +2820,32 @@ plain text
 
     final restored = AppSettings.fromJson(settings.toJson());
     final malformed = AppSettings.fromJson(const {
+      'homePlaybackOrder': ['libraryShuffle', 'libraryShuffle', 'unknown'],
       'homeShortcutOrder': ['publicRadio', 'publicRadio', 'unknown'],
       'homeDiscoveryOrder': ['frequentAlbums'],
     });
     final legacy = AppSettings.fromJson(const {});
 
+    expect(restored.homePlaybackOrder, settings.homePlaybackOrder);
+    expect(restored.startupPlaybackSection, HomePlaybackSection.libraryShuffle);
     expect(restored.homeShortcutOrder, settings.homeShortcutOrder);
     expect(restored.hiddenHomeShortcuts, settings.hiddenHomeShortcuts);
     expect(restored.homeDiscoveryOrder, settings.homeDiscoveryOrder);
     expect(restored.hiddenHomeDiscoveries, settings.hiddenHomeDiscoveries);
     expect(restored.showDailyRecommendation, isFalse);
+    expect(restored.showCasualListening, isFalse);
+    expect(restored.showLibraryShuffle, isTrue);
     expect(restored.showMyPlaylistSection, isFalse);
     expect(restored.showPublicPlaylistSection, isTrue);
     expect(restored.checkUpdatesOnStartup, isTrue);
     expect(restored.shouldLoadHomePlaylists, isTrue);
     expect(const AppSettings().checkUpdatesOnStartup, isTrue);
     expect(legacy.checkUpdatesOnStartup, isTrue);
+    expect(malformed.homePlaybackOrder, [
+      HomePlaybackSection.libraryShuffle,
+      HomePlaybackSection.dailyRecommendation,
+      HomePlaybackSection.casualListening,
+    ]);
     expect(malformed.homeShortcutOrder, [
       HomeShortcutSection.publicRadio,
       HomeShortcutSection.favorites,
@@ -2840,11 +2858,15 @@ plain text
       HomeDiscoverySection.randomAlbums,
       HomeDiscoverySection.recentAlbums,
     ]);
+    expect(legacy.homePlaybackOrder, defaultHomePlaybackOrder);
     expect(legacy.homeShortcutOrder, defaultHomeShortcutOrder);
     expect(legacy.homeDiscoveryOrder, defaultHomeDiscoveryOrder);
+    expect(legacy.visibleHomePlaybackOrder, defaultHomePlaybackOrder);
     expect(legacy.visibleHomeShortcutOrder, defaultHomeShortcutOrder);
     expect(legacy.visibleHomeDiscoveryOrder, defaultHomeDiscoveryOrder);
     expect(legacy.showDailyRecommendation, isTrue);
+    expect(legacy.showCasualListening, isTrue);
+    expect(legacy.showLibraryShuffle, isTrue);
   });
 
   test('builds daily recommendations with quality dedupe and exclusions', () {
@@ -4038,7 +4060,7 @@ plain text
   });
 
   testWidgets(
-    'music home hides source details while top status remains visible',
+    'music home hides source details while status uses bottom message',
     (tester) async {
       tester.view.physicalSize = const Size(1264, 720);
       tester.view.devicePixelRatio = 1;
@@ -4190,11 +4212,26 @@ plain text
       await tester.pumpAndSettle();
     }
 
+    final playbackMaster = find.byKey(
+      const ValueKey('home-playback-all-visible'),
+    );
+    await tapVisible(playbackMaster);
+    expect(controller.settings.showDailyRecommendation, isFalse);
+    expect(controller.settings.showCasualListening, isFalse);
+    expect(controller.settings.showLibraryShuffle, isFalse);
+    expect(
+      find.byKey(const ValueKey('home-playback-dailyRecommendation-visible')),
+      findsNothing,
+    );
+    await tapVisible(playbackMaster);
+    expect(controller.settings.showDailyRecommendation, isTrue);
+    expect(controller.settings.showCasualListening, isTrue);
+    expect(controller.settings.showLibraryShuffle, isTrue);
+
     final shortcutMaster = find.byKey(
       const ValueKey('home-shortcut-all-visible'),
     );
     await tapVisible(shortcutMaster);
-    expect(controller.settings.showDailyRecommendation, isFalse);
     expect(
       controller.settings.hiddenHomeShortcuts,
       containsAll(HomeShortcutSection.values),
@@ -4204,7 +4241,6 @@ plain text
       findsNothing,
     );
     await tapVisible(shortcutMaster);
-    expect(controller.settings.showDailyRecommendation, isTrue);
     expect(controller.settings.hiddenHomeShortcuts, isEmpty);
 
     final discoveryMaster = find.byKey(
@@ -4264,8 +4300,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.1.1',
-        buildNumber: '29',
+        version: '1.1.2',
+        buildNumber: '30',
         buildSignature: '',
       );
     });
@@ -4376,16 +4412,16 @@ plain text
         .first;
     await tester.drag(settingsList, const Offset(0, -1800));
     await tester.pumpAndSettle();
-    await tester.tap(levelSelector);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('警告').last);
+    tester.widget<DropdownButton<AppLogLevel>>(levelSelector).onChanged!(
+      AppLogLevel.warning,
+    );
     await tester.pumpAndSettle();
     expect(controller.settings.logLevel, AppLogLevel.warning);
     expect(store.savedSettings?.logLevel, AppLogLevel.warning);
 
     final openLogs = find.byKey(const ValueKey('settings-open-log-viewer'));
     await tester.ensureVisible(openLogs);
-    await tester.tap(openLogs);
+    tester.widget<IconButton>(openLogs).onPressed!();
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('app-log-viewer-page')), findsOneWidget);
@@ -4414,10 +4450,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.2',
-                  'versionCode': 29,
+                  'latestVersion': '1.1.3',
+                  'versionCode': 31,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.1.2/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.1.3/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4445,7 +4481,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.1.2'), findsOneWidget);
+    expect(find.text('发现新版本 1.1.3'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4457,7 +4493,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.1.1/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.1.3/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4482,11 +4518,11 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.2',
-                  'versionCode': 29,
+                  'latestVersion': '1.1.3',
+                  'versionCode': 31,
                   'downloadUrl': downloadUri.toString(),
                   'githubDownloadUrl':
-                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.2/zmusic-windows-x64.exe',
+                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.3/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4522,8 +4558,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.1.2'));
-    expect(find.text('当前版本：1.1.1'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.1.3'));
+    expect(find.text('当前版本：1.1.2'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('稍后更新'), findsOneWidget);
@@ -5929,7 +5965,7 @@ plain text
     await tester.pumpWidget(ZmusicApp(controller: controller));
     await tester.pump();
 
-    expect(find.text('已加载 fnnav 的库信息，歌曲数：2494。'), findsNothing);
+    expect(find.text('已加载 fnnav 的库信息，歌曲数：2494。'), findsOneWidget);
     expect(find.text('Zmusic'), findsNothing);
     expect(find.byTooltip('设置'), findsNothing);
     expect(
@@ -7461,7 +7497,12 @@ plain text
 
     await tester.tap(find.byTooltip('返回音乐库'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('播放详情'));
+    final playbackDetails = find.byTooltip('播放详情');
+    tester
+        .widget<InkWell>(
+          find.descendant(of: playbackDetails, matching: find.byType(InkWell)),
+        )
+        .onTap!();
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('now-playing-album-link')));
     await tester.pumpAndSettle();

@@ -610,6 +610,11 @@ class SubsonicApiClient {
       sourceItemId: id,
       audioFormat: audioFormat,
       trackNumber: _positiveInt(value, 'track'),
+      playCount: readInt(value, 'playCount') ?? 0,
+      lastPlayedAt: DateTime.tryParse(
+        readNullableString(value, 'played') ?? '',
+      ),
+      genre: readString(value, 'genre'),
     );
   }
 

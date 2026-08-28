@@ -86,6 +86,7 @@ class PlayerController extends ChangeNotifier {
   int? _transientPreviousQueueIndex;
   int? _transientResumeQueueIndex;
   PlaybackMode _playbackMode = PlaybackMode.sequential;
+  bool _forwardOnlyQueue = false;
   bool _handlingPlaybackCompleted = false;
   bool _streamingCacheCompleteMarked = false;
   double? _streamingCacheProgress;
@@ -133,6 +134,8 @@ class PlayerController extends ChangeNotifier {
 
   PlaybackMode get playbackMode => _playbackMode;
 
+  bool get isForwardOnlyQueue => _forwardOnlyQueue;
+
   int? get currentQueueIndex {
     if (_isPlayingTransientTrack) {
       return _transientPreviousQueueIndex;
@@ -159,6 +162,9 @@ class PlayerController extends ChangeNotifier {
   }
 
   bool get canSkipPrevious {
+    if (_forwardOnlyQueue) {
+      return false;
+    }
     if (_isPlayingTransientTrack) {
       return _transientPreviousQueueIndex != null;
     }
@@ -213,6 +219,7 @@ class PlayerController extends ChangeNotifier {
     unawaited(_clearNextTrackPrefetch());
     _cancelStartupRecovery();
     _queue = List.of(queue);
+    _forwardOnlyQueue = false;
     _currentIndex = _queue.isEmpty
         ? null
         : currentIndex != null &&
@@ -233,13 +240,39 @@ class PlayerController extends ChangeNotifier {
 
     await _clearNextTrackPrefetch();
     _clearTransientPlaybackState();
+    _forwardOnlyQueue = false;
     _queue = List.of(tracks);
     await _playIndex(index, ++_playRequestId);
+  }
+
+  Future<void> playForwardOnlyTracks(List<Track> tracks, int index) async {
+    if (tracks.isEmpty || index < 0 || index >= tracks.length) {
+      return;
+    }
+
+    await _clearNextTrackPrefetch();
+    _clearTransientPlaybackState();
+    _forwardOnlyQueue = true;
+    _playbackMode = PlaybackMode.sequential;
+    _queue = List.of(tracks);
+    await _playIndex(index, ++_playRequestId);
+  }
+
+  void appendTracks(Iterable<Track> tracks) {
+    final additions = tracks.toList();
+    if (additions.isEmpty) {
+      return;
+    }
+    _queue.addAll(additions);
+    _maybeStartNextTrackPrefetch();
+    _notifyPlaybackSessionChanged();
+    notifyListeners();
   }
 
   Future<void> playTrack(Track track) async {
     await _clearNextTrackPrefetch();
     _clearTransientPlaybackState();
+    _forwardOnlyQueue = false;
     _queue = [track];
     await _playIndex(0, ++_playRequestId);
   }
@@ -268,6 +301,9 @@ class PlayerController extends ChangeNotifier {
   }
 
   void setPlaybackMode(PlaybackMode mode) {
+    if (_forwardOnlyQueue) {
+      return;
+    }
     if (_playbackMode == mode) {
       return;
     }
@@ -329,6 +365,7 @@ class PlayerController extends ChangeNotifier {
     _activePlaybackCacheFile = null;
     _queue = [];
     _currentIndex = null;
+    _forwardOnlyQueue = false;
     _currentTrackNeedsOpening = false;
     _clearTransientPlaybackState();
     _notifyPlaybackSessionChanged();
@@ -1433,7 +1470,11 @@ class PlayerController extends ChangeNotifier {
           return;
         }
         if (nextQueue.isNotEmpty) {
-          await playTracks(nextQueue, 0);
+          if (_forwardOnlyQueue) {
+            await playForwardOnlyTracks(nextQueue, 0);
+          } else {
+            await playTracks(nextQueue, 0);
+          }
           return;
         }
       }

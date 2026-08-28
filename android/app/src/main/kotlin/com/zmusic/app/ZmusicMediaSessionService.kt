@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -58,11 +61,42 @@ internal object MediaControlBridge {
 
 class ZmusicMediaSessionService : Service() {
     private lateinit var mediaSession: MediaSession
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var audioFocusRequested = false
+    private var audioFocusInterrupted = false
     private var state = MediaState()
+    private val audioFocusChangeListener =
+        AudioManager.OnAudioFocusChangeListener { focusChange ->
+            when (focusChange) {
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    val shouldRestoreVolume = audioFocusInterrupted
+                    audioFocusInterrupted = false
+                    audioFocusRequested = true
+                    if (shouldRestoreVolume) {
+                        MediaControlBridge.dispatch("audioFocusRestore")
+                    }
+                    if (!state.isPlaying) {
+                        abandonPlaybackAudioFocus()
+                    }
+                }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    audioFocusInterrupted = true
+                    MediaControlBridge.dispatch("audioFocusDuck")
+                }
+                AudioManager.AUDIOFOCUS_LOSS -> {
+                    audioFocusRequested = false
+                    audioFocusInterrupted = false
+                    MediaControlBridge.dispatch("audioFocusPause")
+                }
+            }
+        }
 
     override fun onCreate() {
         super.onCreate()
         current = this
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         createNotificationChannel()
         mediaSession = MediaSession(this, "Zmusic").apply {
             setFlags(
@@ -112,6 +146,7 @@ class ZmusicMediaSessionService : Service() {
         if (current === this) {
             current = null
         }
+        releasePlaybackAudioFocus()
         mediaSession.isActive = false
         mediaSession.release()
         super.onDestroy()
@@ -123,6 +158,7 @@ class ZmusicMediaSessionService : Service() {
             stopSession()
             return
         }
+        syncPlaybackAudioFocus(value.isPlaying)
 
         var actions =
             PlaybackState.ACTION_PLAY or
@@ -167,9 +203,73 @@ class ZmusicMediaSessionService : Service() {
     }
 
     private fun stopSession() {
+        releasePlaybackAudioFocus()
         mediaSession.isActive = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun syncPlaybackAudioFocus(isPlaying: Boolean) {
+        if (isPlaying) {
+            requestPlaybackAudioFocus()
+        } else if (!audioFocusInterrupted) {
+            abandonPlaybackAudioFocus()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun requestPlaybackAudioFocus() {
+        if (audioFocusRequested) {
+            return
+        }
+        val result =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val request =
+                    audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                .build(),
+                        )
+                        .setAcceptsDelayedFocusGain(false)
+                        .setWillPauseWhenDucked(true)
+                        .setOnAudioFocusChangeListener(
+                            audioFocusChangeListener,
+                            Handler(Looper.getMainLooper()),
+                        )
+                        .build()
+                        .also { audioFocusRequest = it }
+                audioManager.requestAudioFocus(request)
+            } else {
+                audioManager.requestAudioFocus(
+                    audioFocusChangeListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN,
+                )
+            }
+        audioFocusRequested = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    @Suppress("DEPRECATION")
+    private fun abandonPlaybackAudioFocus() {
+        if (!audioFocusRequested) {
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let(audioManager::abandonAudioFocusRequest)
+        } else {
+            audioManager.abandonAudioFocus(audioFocusChangeListener)
+        }
+        audioFocusRequested = false
+    }
+
+    private fun releasePlaybackAudioFocus() {
+        if (audioFocusInterrupted) {
+            MediaControlBridge.dispatch("audioFocusRestore")
+        }
+        audioFocusInterrupted = false
+        abandonPlaybackAudioFocus()
     }
 
     private fun buildNotification(value: MediaState): Notification {

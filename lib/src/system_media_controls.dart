@@ -41,6 +41,8 @@ class SystemMediaControls {
   bool _initialized = false;
   bool _disposed = false;
   bool _stateUpdateScheduled = false;
+  bool _audioFocusDucked = false;
+  double? _volumeBeforeAudioFocusDuck;
   String _artworkSource = '';
   String _artworkPath = '';
   int _artworkRequestId = 0;
@@ -90,8 +92,38 @@ class SystemMediaControls {
         await player.playNext();
       case 'previous':
         await player.playPrevious();
+      case 'audioFocusDuck':
+        await _setAudioFocusDucked(true);
+      case 'audioFocusRestore':
+        await _setAudioFocusDucked(false);
+      case 'audioFocusPause':
+        await _setAudioFocusDucked(false);
+        await player.pause();
       case 'exit':
         await _onExitRequested?.call();
+    }
+  }
+
+  Future<void> _setAudioFocusDucked(bool ducked) async {
+    if (ducked) {
+      if (_audioFocusDucked) {
+        return;
+      }
+      _audioFocusDucked = true;
+      final originalVolume = player.volume;
+      _volumeBeforeAudioFocusDuck = originalVolume;
+      await player.setVolume(originalVolume * 0.2);
+      if (!_audioFocusDucked) {
+        await player.setVolume(originalVolume);
+      }
+      return;
+    }
+
+    _audioFocusDucked = false;
+    final originalVolume = _volumeBeforeAudioFocusDuck;
+    _volumeBeforeAudioFocusDuck = null;
+    if (originalVolume != null) {
+      await player.setVolume(originalVolume);
     }
   }
 

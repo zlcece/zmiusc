@@ -84,6 +84,7 @@ class AppController extends ChangeNotifier {
   List<Track> customTracks = [];
   List<Track> localTracks = [];
   List<Track> recommendedTracks = [];
+  List<Track> casualListeningTracks = [];
   LibrarySearchResults searchResults = const LibrarySearchResults();
   int searchSongPageIndex = 0;
   bool hasNextSearchSongPage = false;
@@ -100,6 +101,8 @@ class AppController extends ChangeNotifier {
   bool isBusy = false;
   bool isRefreshingLibrary = false;
   bool isLoadingRecommendations = false;
+  bool isLoadingCasualListening = false;
+  bool isLoadingLibraryShuffle = false;
   bool _logsUnlocked = false;
   final Set<String> _favoriteTrackToggleKeys = <String>{};
   final Map<String, ({DateTime loadedAt, List<Track> tracks})>
@@ -114,8 +117,11 @@ class AppController extends ChangeNotifier {
   bool _suppressPlaybackSessionPersistence = false;
   bool _isRestoringPlaybackSession = false;
   int _recommendationRequestId = 0;
+  int _casualListeningRequestId = 0;
+  int _libraryShuffleRequestId = 0;
   String? _recommendedDateKey;
   List<DailyRecommendationHistoryEntry> _recommendationHistory = [];
+  final Set<String> _libraryShuffleTrackKeys = <String>{};
   late final StreamSubscription<Duration> _positionSubscription;
 
   ServerConfig? get selectedServer {
@@ -130,6 +136,8 @@ class AppController extends ChangeNotifier {
   String get selectedUsername => selectedServer?.username.trim() ?? '';
 
   bool get logsUnlocked => _logsUnlocked;
+
+  bool get isLibraryShuffleActive => player.isForwardOnlyQueue;
 
   bool unlockLogsForSession(String password) {
     if (password != 'rizhi') {
@@ -291,7 +299,7 @@ class AppController extends ChangeNotifier {
 
     notifyListeners();
     if (loadLibrary && selectedServer != null) {
-      await loadLibraryOverview();
+      await loadLibraryOverview(refreshHomePlayback: true);
     } else {
       libraryOverview = const LibraryOverview();
     }
@@ -333,6 +341,7 @@ class AppController extends ChangeNotifier {
       await store.saveLoginCredentials(account, password);
       await _clearPlaybackSession();
       await _clearDailyRecommendation();
+      _clearCasualListening();
       _clearPlaylistTrackCache();
       for (final existing in servers) {
         if (existing.id != server.id) {
@@ -364,13 +373,19 @@ class AppController extends ChangeNotifier {
       isBusy = false;
       notifyListeners();
     }
-    unawaited(loadLibraryOverview(autoPlayDailyRecommendationOnStartup: true));
+    unawaited(
+      loadLibraryOverview(
+        autoPlayDailyRecommendationOnStartup: true,
+        refreshHomePlayback: true,
+      ),
+    );
   }
 
   Future<void> logout() async {
     AppLogger.instance.info('account', '退出当前账号');
     await _clearPlaybackSession();
     await _clearDailyRecommendation();
+    _clearCasualListening();
     _clearPlaylistTrackCache();
     for (final server in servers) {
       await store.deleteServerPassword(server.id);
@@ -415,6 +430,13 @@ class AppController extends ChangeNotifier {
         await _clearDailyRecommendation();
       }
     }
+    if (previousSettings.showCasualListening != settings.showCasualListening) {
+      if (settings.showCasualListening) {
+        unawaited(ensureCasualListening());
+      } else {
+        _clearCasualListening();
+      }
+    }
     statusMessage = '设置已保存。';
     notifyListeners();
     if (shouldReloadHomeOverview && selectedServer != null) {
@@ -438,6 +460,12 @@ class AppController extends ChangeNotifier {
     for (final section in HomeShortcutSection.values) {
       if (!previous.isHomeShortcutVisible(section) &&
           current.isHomeShortcutVisible(section)) {
+        return true;
+      }
+    }
+    for (final section in HomePlaybackSection.values) {
+      if (!previous.isHomePlaybackVisible(section) &&
+          current.isHomePlaybackVisible(section)) {
         return true;
       }
     }
@@ -576,6 +604,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> loadLibraryOverview({
     bool autoPlayDailyRecommendationOnStartup = false,
+    bool refreshHomePlayback = false,
   }) async {
     final server = selectedServer;
     if (server == null) {
@@ -600,7 +629,10 @@ class AppController extends ChangeNotifier {
       localTracks = [];
       libraryOverview = const LibraryOverview();
       notifyListeners();
-      await _loadRemoteLibraryOverviewIncrementally(server);
+      await _loadRemoteLibraryOverviewIncrementally(
+        server,
+        refreshHomePlayback: refreshHomePlayback,
+      );
       AppLogger.instance.info('library', '曲库加载完成');
     } finally {
       isBusy = false;
@@ -608,25 +640,46 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     }
     if (autoPlayDailyRecommendationOnStartup) {
-      await _autoPlayDailyRecommendationAfterStartup();
+      await _autoPlayConfiguredHomeSectionAfterStartup();
     }
   }
 
-  Future<void> _autoPlayDailyRecommendationAfterStartup() async {
+  Future<void> _autoPlayConfiguredHomeSectionAfterStartup() async {
     if (!settings.autoPlayDailyRecommendationOnStartup ||
-        !settings.showDailyRecommendation ||
-        recommendedTracks.isEmpty ||
         player.isPlaying ||
         player.isBuffering) {
       return;
     }
-    AppLogger.instance.info('recommendation', '启动加载完成，自动播放每日推荐');
-    await playTrackList(List<Track>.of(recommendedTracks), 0);
+    final section = settings.startupPlaybackSection;
+    if (!settings.isHomePlaybackVisible(section)) {
+      return;
+    }
+    switch (section) {
+      case HomePlaybackSection.dailyRecommendation:
+        if (recommendedTracks.isEmpty) {
+          return;
+        }
+        AppLogger.instance.info('recommendation', '启动加载完成，自动播放每日推荐');
+        await playTrackList(List<Track>.of(recommendedTracks), 0);
+        return;
+      case HomePlaybackSection.casualListening:
+        if (casualListeningTracks.isEmpty) {
+          return;
+        }
+        AppLogger.instance.info('recommendation', '启动加载完成，自动播放随便听听');
+        await playTrackList(List<Track>.of(casualListeningTracks), 0);
+        return;
+      case HomePlaybackSection.libraryShuffle:
+        AppLogger.instance.info('recommendation', '启动加载完成，自动播放曲库随机');
+        await startLibraryShuffle();
+        return;
+    }
   }
 
   Future<void> _loadRemoteLibraryOverviewIncrementally(
-    ServerConfig server,
-  ) async {
+    ServerConfig server, {
+    required bool refreshHomePlayback,
+  }) async {
     final client = apiClientFactory(server);
     final errors = <Object>[];
 
@@ -656,14 +709,19 @@ class AppController extends ChangeNotifier {
     final deferredTasks = <Future<void>>[];
     final shouldGenerateRecommendations =
         settings.showDailyRecommendation && recommendedTracks.isEmpty;
+    final shouldGenerateCasualListening =
+        settings.showCasualListening &&
+        (refreshHomePlayback || casualListeningTracks.isEmpty);
     final recentAlbumsFuture =
         settings.isHomeDiscoveryVisible(HomeDiscoverySection.recentAlbums) ||
-            shouldGenerateRecommendations
+            shouldGenerateRecommendations ||
+            shouldGenerateCasualListening
         ? client.albumList('recent', size: 12)
         : null;
     final frequentAlbumsFuture =
         settings.isHomeDiscoveryVisible(HomeDiscoverySection.frequentAlbums) ||
-            shouldGenerateRecommendations
+            shouldGenerateRecommendations ||
+            shouldGenerateCasualListening
         ? client.albumList('frequent', size: 12)
         : null;
     final favoriteTracksFuture =
@@ -762,6 +820,18 @@ class AppController extends ChangeNotifier {
           client,
           seed: _dailyRecommendationSeed(DateTime.now()),
           favoriteTracksFuture: favoriteTracksFuture!,
+          recentAlbumsFuture: recentAlbumsFuture!,
+          frequentAlbumsFuture: frequentAlbumsFuture!,
+          showStatus: false,
+        ),
+      );
+    }
+    if (shouldGenerateCasualListening) {
+      deferredTasks.add(
+        _loadCasualListeningForServer(
+          server,
+          client,
+          seed: DateTime.now().microsecondsSinceEpoch,
           recentAlbumsFuture: recentAlbumsFuture!,
           frequentAlbumsFuture: frequentAlbumsFuture!,
           showStatus: false,
@@ -977,6 +1047,114 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<void> ensureCasualListening() async {
+    final server = selectedServer;
+    if (!settings.showCasualListening ||
+        server == null ||
+        server.isLocalFolder ||
+        isLoadingCasualListening ||
+        casualListeningTracks.isNotEmpty) {
+      return;
+    }
+    final client = apiClientFactory(server);
+    await _loadCasualListeningForServer(
+      server,
+      client,
+      seed: DateTime.now().microsecondsSinceEpoch,
+      recentAlbumsFuture: client.albumList('recent', size: 12),
+      frequentAlbumsFuture: client.albumList('frequent', size: 12),
+      showStatus: false,
+    );
+  }
+
+  Future<void> refreshCasualListening() async {
+    final server = selectedServer;
+    if (!settings.showCasualListening ||
+        server == null ||
+        server.isLocalFolder ||
+        isLoadingCasualListening) {
+      return;
+    }
+    final client = apiClientFactory(server);
+    await _loadCasualListeningForServer(
+      server,
+      client,
+      seed: DateTime.now().microsecondsSinceEpoch,
+      recentAlbumsFuture: client.albumList('recent', size: 12),
+      frequentAlbumsFuture: client.albumList('frequent', size: 12),
+      showStatus: true,
+    );
+  }
+
+  Future<void> _loadCasualListeningForServer(
+    ServerConfig server,
+    SubsonicApiClient client, {
+    required int seed,
+    required Future<List<LibrarySectionItem>> recentAlbumsFuture,
+    required Future<List<LibrarySectionItem>> frequentAlbumsFuture,
+    required bool showStatus,
+  }) async {
+    if (isLoadingCasualListening) {
+      return;
+    }
+
+    final requestId = ++_casualListeningRequestId;
+    isLoadingCasualListening = true;
+    notifyListeners();
+    try {
+      final randomTracksFuture = _safeRecommendationList(
+        client.randomSongs(size: _casualListeningCandidateCount),
+      );
+      final recentAlbums = await _safeRecommendationList(recentAlbumsFuture);
+      final frequentAlbums = await _safeRecommendationList(
+        frequentAlbumsFuture,
+      );
+      final habitAlbums = _interleaveRecommendationAlbums(
+        recentAlbums,
+        frequentAlbums,
+      ).take(4);
+      final habitTracks = (await Future.wait(
+        habitAlbums.map(
+          (album) => _safeRecommendationList(client.albumTracks(album.id)),
+        ),
+      )).expand((tracks) => tracks).toList();
+      final randomTracks = await randomTracksFuture;
+      final tracks = buildCasualListeningTracks(
+        candidates: randomTracks,
+        habitTracks: habitTracks,
+        habitAlbums: habitAlbums,
+        excludedTracks: player.queue,
+        seed: seed,
+      );
+      if (requestId != _casualListeningRequestId ||
+          !_isCurrentServer(server) ||
+          !settings.showCasualListening) {
+        return;
+      }
+      casualListeningTracks = tracks;
+      if (showStatus) {
+        statusMessage = tracks.isEmpty
+            ? '暂时没有可播放的随便听听歌曲。'
+            : '已换一批随便听听：${tracks.length} 首。';
+      }
+    } catch (error, stackTrace) {
+      AppLogger.instance.error(
+        'recommendation',
+        '生成随便听听失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (showStatus && requestId == _casualListeningRequestId) {
+        statusMessage = '生成随便听听失败，请稍后重试。';
+      }
+    } finally {
+      if (requestId == _casualListeningRequestId) {
+        isLoadingCasualListening = false;
+        notifyListeners();
+      }
+    }
+  }
+
   Future<void> _loadDailyRecommendationForServer(
     ServerConfig server,
     SubsonicApiClient client, {
@@ -1150,6 +1328,60 @@ class AppController extends ChangeNotifier {
     isLoadingRecommendations = false;
     await store.clearDailyRecommendation();
     notifyListeners();
+  }
+
+  void _clearCasualListening() {
+    _casualListeningRequestId++;
+    casualListeningTracks = [];
+    isLoadingCasualListening = false;
+    notifyListeners();
+  }
+
+  Future<({List<Track> tracks, int failedAlbumCount})> homeDiscoveryTracks(
+    Iterable<LibrarySectionItem> albums,
+  ) async {
+    final server = selectedServer;
+    if (server == null || server.isLocalFolder) {
+      return (tracks: const <Track>[], failedAlbumCount: 0);
+    }
+
+    final uniqueAlbums = <LibrarySectionItem>[];
+    final albumIds = <String>{};
+    for (final album in albums) {
+      final id = album.id.trim();
+      if (id.isNotEmpty && albumIds.add(id)) {
+        uniqueAlbums.add(album);
+      }
+    }
+    final client = apiClientFactory(server);
+    final results = await Future.wait(
+      uniqueAlbums.map((album) async {
+        try {
+          return await client
+              .albumTracks(album.id)
+              .timeout(playlistTrackLoadTimeout);
+        } catch (error, stackTrace) {
+          AppLogger.instance.warning(
+            'library',
+            '加载专辑“${album.title}”歌曲失败',
+            error: error,
+            stackTrace: stackTrace,
+          );
+          return null;
+        }
+      }),
+    );
+    if (!_isCurrentServer(server)) {
+      return (tracks: const <Track>[], failedAlbumCount: 0);
+    }
+
+    final tracks = _bestRecommendationTracksByKey(
+      results.whereType<List<Track>>().expand((value) => value),
+    ).values.toList(growable: false);
+    return (
+      tracks: tracks,
+      failedAlbumCount: results.where((value) => value == null).length,
+    );
   }
 
   Future<List<Track>> playlistTracks(
@@ -1729,17 +1961,171 @@ class AppController extends ChangeNotifier {
     if (index >= 0) {
       await playTrackList(tracks, index);
     } else {
+      _cancelLibraryShuffleLoad();
       await _play(() => player.playTrack(track));
     }
   }
 
   Future<void> playTrackList(List<Track> tracks, int index) async {
+    _cancelLibraryShuffleLoad();
     await _play(() => player.playTracks(tracks, index));
+  }
+
+  Future<void> startLibraryShuffle() async {
+    final server = selectedServer;
+    if (server == null ||
+        server.isLocalFolder ||
+        !settings.showLibraryShuffle ||
+        isLoadingLibraryShuffle) {
+      return;
+    }
+
+    final requestId = ++_libraryShuffleRequestId;
+    isLoadingLibraryShuffle = true;
+    statusMessage = null;
+    notifyListeners();
+    try {
+      final tracks = await _loadLibraryShuffleBatch(server, const <String>{});
+      if (requestId != _libraryShuffleRequestId || !_isCurrentServer(server)) {
+        return;
+      }
+      if (tracks.isEmpty) {
+        statusMessage = '曲库中暂时没有可随机播放的歌曲。';
+        return;
+      }
+      _libraryShuffleTrackKeys
+        ..clear()
+        ..addAll(tracks.map(_recommendationTrackKey));
+      await player.playForwardOnlyTracks(tracks, 0);
+      statusMessage = '已开始曲库随机。';
+      AppLogger.instance.info('player', '曲库随机已开始，隐藏队列共 ${tracks.length} 首');
+    } catch (error, stackTrace) {
+      statusMessage = '启动曲库随机失败，请稍后重试。';
+      AppLogger.instance.error(
+        'player',
+        '启动曲库随机失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    } finally {
+      if (requestId == _libraryShuffleRequestId) {
+        isLoadingLibraryShuffle = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void _maybeExtendLibraryShuffle() {
+    if (!isLibraryShuffleActive || isLoadingLibraryShuffle) {
+      return;
+    }
+    final index = player.currentQueueIndex;
+    final queueLength = player.queue.length;
+    if (index == null ||
+        queueLength == 0 ||
+        index < queueLength - _libraryShuffleRefillRemainingCount) {
+      return;
+    }
+    final server = selectedServer;
+    if (server == null || server.isLocalFolder) {
+      return;
+    }
+    final requestId = ++_libraryShuffleRequestId;
+    isLoadingLibraryShuffle = true;
+    notifyListeners();
+    unawaited(_appendLibraryShuffleBatch(server, requestId));
+  }
+
+  Future<void> _appendLibraryShuffleBatch(
+    ServerConfig server,
+    int requestId,
+  ) async {
+    try {
+      final tracks = await _loadLibraryShuffleBatch(
+        server,
+        _libraryShuffleTrackKeys,
+      );
+      if (requestId != _libraryShuffleRequestId ||
+          !isLibraryShuffleActive ||
+          !_isCurrentServer(server)) {
+        return;
+      }
+      _libraryShuffleTrackKeys.addAll(tracks.map(_recommendationTrackKey));
+      player.appendTracks(tracks);
+      AppLogger.instance.debug('player', '曲库随机已追加 ${tracks.length} 首隐藏队列歌曲');
+    } catch (error, stackTrace) {
+      AppLogger.instance.warning(
+        'player',
+        '曲库随机追加歌曲失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    } finally {
+      if (requestId == _libraryShuffleRequestId) {
+        isLoadingLibraryShuffle = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<List<Track>> _loadLibraryShuffleBatch(
+    ServerConfig server,
+    Set<String> excludedKeys,
+  ) async {
+    final selected = <Track>[];
+    final usedKeys = Set<String>.from(excludedKeys);
+    final client = apiClientFactory(server);
+    for (
+      var attempt = 0;
+      attempt < 3 && selected.length < _libraryShuffleBatchSize;
+      attempt++
+    ) {
+      final candidates = _bestRecommendationTracksByKey(
+        await client.randomSongs(size: _libraryShuffleCandidateCount),
+      ).values.toList()..shuffle();
+      for (final track in candidates) {
+        if (!usedKeys.add(_recommendationTrackKey(track))) {
+          continue;
+        }
+        selected.add(track);
+        if (selected.length >= _libraryShuffleBatchSize) {
+          break;
+        }
+      }
+    }
+    return selected;
+  }
+
+  void _cancelLibraryShuffleLoad() {
+    _libraryShuffleRequestId++;
+    isLoadingLibraryShuffle = false;
+    _libraryShuffleTrackKeys.clear();
   }
 
   Future<List<Track>> _loadRandomQueueAfterSequentialCompletion() async {
     final server = selectedServer;
     final currentTrack = player.currentTrack;
+    if (isLibraryShuffleActive && server != null && !server.isLocalFolder) {
+      try {
+        final tracks = await _loadLibraryShuffleBatch(
+          server,
+          _libraryShuffleTrackKeys,
+        );
+        if (!isLibraryShuffleActive || selectedServer?.id != server.id) {
+          return const [];
+        }
+        _libraryShuffleTrackKeys.addAll(tracks.map(_recommendationTrackKey));
+        return tracks;
+      } catch (error, stackTrace) {
+        AppLogger.instance.warning(
+          'player',
+          '曲库随机队列结束时加载下一批失败',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        return const [];
+      }
+    }
     if (!settings.playRandomAfterSequentialQueue ||
         server == null ||
         server.isLocalFolder ||
@@ -1794,6 +2180,7 @@ class AppController extends ChangeNotifier {
     }
 
     final tracks = [for (final value in stations) _radioTrack(value, server)];
+    _cancelLibraryShuffleLoad();
     player.setPlaybackMode(PlaybackMode.sequential);
     await _play(() => player.playTracks(tracks, index));
   }
@@ -1990,6 +2377,7 @@ class AppController extends ChangeNotifier {
     }
 
     try {
+      _cancelLibraryShuffleLoad();
       await player.playTracks(tracks, 0);
       statusMessage = '已打开 ${tracks.length} 首本地歌曲。';
     } catch (error) {
@@ -2133,6 +2521,7 @@ class AppController extends ChangeNotifier {
 
   void _handlePlayerChanged() {
     notifyListeners();
+    _maybeExtendLibraryShuffle();
     if (_isRestoringPlaybackSession) {
       return;
     }
@@ -2150,7 +2539,9 @@ class AppController extends ChangeNotifier {
   }
 
   void _handlePlaybackSessionChanged() {
-    if (_suppressPlaybackSessionPersistence || !isAuthenticated) {
+    if (_suppressPlaybackSessionPersistence ||
+        !isAuthenticated ||
+        isLibraryShuffleActive) {
       return;
     }
     final session = PlaybackSession(
@@ -2172,6 +2563,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> _clearPlaybackSession() async {
     _suppressPlaybackSessionPersistence = true;
+    _cancelLibraryShuffleLoad();
     try {
       await player.stop();
       player.setPlaybackMode(PlaybackMode.sequential);
@@ -2482,6 +2874,11 @@ const int _recommendationHistoryDays = 7;
 const int _recommendationGeneralCooldownDays = 3;
 const int _recommendationFavoriteCooldownDays = 5;
 const int _sequentialCompletionRandomQueueSize = 30;
+const int _casualListeningCount = 30;
+const int _casualListeningCandidateCount = 300;
+const int _libraryShuffleBatchSize = 10;
+const int _libraryShuffleCandidateCount = 30;
+const int _libraryShuffleRefillRemainingCount = 3;
 
 String _recommendationDateKey(DateTime date) {
   final month = date.month.toString().padLeft(2, '0');
@@ -2571,6 +2968,82 @@ List<LibrarySectionItem> _interleaveRecommendationAlbums(
     }
   }
   return result;
+}
+
+List<Track> buildCasualListeningTracks({
+  required List<Track> candidates,
+  required Iterable<Track> habitTracks,
+  required Iterable<LibrarySectionItem> habitAlbums,
+  required Iterable<Track> excludedTracks,
+  required int seed,
+}) {
+  final excludedKeys = excludedTracks.map(_recommendationTrackKey).toSet();
+  final bestByKey = _bestRecommendationTracksByKey(candidates);
+  final tracks = bestByKey.entries
+      .where((entry) => !excludedKeys.contains(entry.key))
+      .map((entry) => entry.value)
+      .toList();
+  final habitArtists = <String>{
+    for (final track in habitTracks)
+      if (_normalizeRecommendationText(track.artist).isNotEmpty)
+        _normalizeRecommendationText(track.artist),
+    for (final album in habitAlbums)
+      if (_normalizeRecommendationText(album.subtitle).isNotEmpty)
+        _normalizeRecommendationText(album.subtitle),
+  };
+  final habitGenres = <String>{
+    for (final track in habitTracks)
+      if (_normalizeRecommendationText(track.genre).isNotEmpty)
+        _normalizeRecommendationText(track.genre),
+  };
+  final random = Random(seed);
+  final tieBreakers = <String, int>{
+    for (final track in tracks)
+      _recommendationTrackKey(track): random.nextInt(1 << 31),
+  };
+
+  bool isUnheard(Track track) {
+    return track.playCount <= 0 || track.lastPlayedAt == null;
+  }
+
+  bool contrastsWithHabits(Track track) {
+    final artist = _normalizeRecommendationText(track.artist);
+    final genre = _normalizeRecommendationText(track.genre);
+    return !habitArtists.contains(artist) &&
+        (genre.isEmpty || !habitGenres.contains(genre));
+  }
+
+  tracks.sort((left, right) {
+    final unheardComparison = (isUnheard(right) ? 1 : 0).compareTo(
+      isUnheard(left) ? 1 : 0,
+    );
+    if (unheardComparison != 0) {
+      return unheardComparison;
+    }
+    final leftPlayedAt = left.lastPlayedAt?.millisecondsSinceEpoch ?? -1;
+    final rightPlayedAt = right.lastPlayedAt?.millisecondsSinceEpoch ?? -1;
+    final playedAtComparison = leftPlayedAt.compareTo(rightPlayedAt);
+    if (playedAtComparison != 0) {
+      return playedAtComparison;
+    }
+    final playCountComparison = left.playCount.compareTo(right.playCount);
+    if (playCountComparison != 0) {
+      return playCountComparison;
+    }
+    final contrastComparison = (contrastsWithHabits(right) ? 1 : 0).compareTo(
+      contrastsWithHabits(left) ? 1 : 0,
+    );
+    if (contrastComparison != 0) {
+      return contrastComparison;
+    }
+    return tieBreakers[_recommendationTrackKey(left)]!.compareTo(
+      tieBreakers[_recommendationTrackKey(right)]!,
+    );
+  });
+
+  return _avoidAdjacentRecommendationArtists(
+    tracks.take(_casualListeningCount).toList(),
+  );
 }
 
 List<Track> buildDailyRecommendationTracks({
@@ -2828,12 +3301,12 @@ bool _isRadioPlaylistUri(Uri uri) {
   return path.endsWith('.m3u') || path.endsWith('.pls');
 }
 
-String _searchStatusMessage(
+String? _searchStatusMessage(
   LibrarySearchScope scope,
   LibrarySearchResults results,
 ) {
   if (results.isEmpty) {
-    return '没有找到相关结果。';
+    return null;
   }
 
   return switch (scope) {

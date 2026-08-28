@@ -385,6 +385,9 @@ class Track {
     this.sourceItemId,
     this.audioFormat,
     this.trackNumber,
+    this.playCount = 0,
+    this.lastPlayedAt,
+    this.genre = '',
   });
 
   final String id;
@@ -401,6 +404,9 @@ class Track {
   final String? sourceItemId;
   final String? audioFormat;
   final int? trackNumber;
+  final int playCount;
+  final DateTime? lastPlayedAt;
+  final String genre;
 
   Track copyWith({
     String? id,
@@ -417,6 +423,9 @@ class Track {
     String? sourceItemId,
     String? audioFormat,
     int? trackNumber,
+    int? playCount,
+    DateTime? lastPlayedAt,
+    String? genre,
   }) {
     return Track(
       id: id ?? this.id,
@@ -433,6 +442,9 @@ class Track {
       sourceItemId: sourceItemId ?? this.sourceItemId,
       audioFormat: audioFormat ?? this.audioFormat,
       trackNumber: trackNumber ?? this.trackNumber,
+      playCount: playCount ?? this.playCount,
+      lastPlayedAt: lastPlayedAt ?? this.lastPlayedAt,
+      genre: genre ?? this.genre,
     );
   }
 
@@ -452,6 +464,9 @@ class Track {
       'sourceItemId': sourceItemId,
       'audioFormat': audioFormat,
       'trackNumber': trackNumber,
+      'playCount': playCount,
+      'lastPlayedAt': lastPlayedAt?.toIso8601String(),
+      'genre': genre,
     };
   }
 
@@ -486,6 +501,11 @@ class Track {
           ? readAudioFormat(readNullableString(json, 'audioFormat'))
           : readAudioFormatFromPath(localPath),
       trackNumber: readInt(json, 'trackNumber'),
+      playCount: readInt(json, 'playCount') ?? 0,
+      lastPlayedAt: DateTime.tryParse(
+        readNullableString(json, 'lastPlayedAt') ?? '',
+      ),
+      genre: readString(json, 'genre'),
     );
   }
 }
