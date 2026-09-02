@@ -167,8 +167,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.1.2',
-    buildNumber: '30',
+    version: '1.1.3',
+    buildNumber: '31',
     buildSignature: '',
   );
 
@@ -4124,7 +4124,11 @@ plain text
     expect(find.byKey(const ValueKey('logout-button')), findsOneWidget);
     expect(find.text('音源'), findsNothing);
     expect(find.text('导入'), findsNothing);
-    expect(find.text('添加'), findsNothing);
+    expect(find.text('添加本地'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('settings-ai-service-add')),
+      findsOneWidget,
+    );
 
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4300,8 +4304,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.1.2',
-        buildNumber: '30',
+        version: '1.1.3',
+        buildNumber: '31',
         buildSignature: '',
       );
     });
@@ -4450,10 +4454,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.3',
-                  'versionCode': 31,
+                  'latestVersion': '1.1.4',
+                  'versionCode': 32,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.1.3/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.1.4/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4481,7 +4485,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.1.3'), findsOneWidget);
+    expect(find.text('发现新版本 1.1.4'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4493,7 +4497,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.1.3/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.1.4/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4518,11 +4522,11 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.3',
-                  'versionCode': 31,
+                  'latestVersion': '1.1.4',
+                  'versionCode': 32,
                   'downloadUrl': downloadUri.toString(),
                   'githubDownloadUrl':
-                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.3/zmusic-windows-x64.exe',
+                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.4/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4558,8 +4562,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.1.3'));
-    expect(find.text('当前版本：1.1.2'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.1.4'));
+    expect(find.text('当前版本：1.1.3'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('稍后更新'), findsOneWidget);
@@ -4690,8 +4694,13 @@ plain text
     expect(find.text('demo'), findsOneWidget);
     expect(find.text('歌曲数：2176'), findsOneWidget);
     expect(find.byKey(const ValueKey('logout-button')), findsOneWidget);
+    expect(find.text('音源'), findsNothing);
     expect(find.text('导入'), findsNothing);
-    expect(find.text('添加'), findsNothing);
+    expect(find.text('添加本地'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('settings-ai-service-add')),
+      findsOneWidget,
+    );
 
     debugDefaultTargetPlatformOverride = null;
   });

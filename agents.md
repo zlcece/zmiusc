@@ -21,7 +21,7 @@
 - Flutter 跨平台音乐播放器，重点支持 Windows，并支持 Android、iOS 与 macOS。
 - 界面默认中文，支持浅色、深色、跟随系统。
 - UI 风格偏苹果玻璃风格，深色模式图标要尽量可见。
-- 设置页的应用 Logo 与背景图使用两个独立上传入口和持久化路径；背景负责全屏填充，Logo 作为独立淡化品牌层。
+- 设置页的应用 Logo 与背景图使用两个独立上传入口和持久化路径；未上传背景图时只显示主题底色，不加载内置默认图，有效的上传背景继续全屏填充，Logo 作为独立淡化品牌层。
 
 ## 核心功能记忆
 
@@ -33,6 +33,7 @@
 - 音乐页默认顺序为：搜索框；“每日推荐 / 随便听听 / 曲库随机”推荐播放入口；“我喜欢的 / 我的歌单 / 公开歌单 / 电台”快捷入口；最新专辑与随机专辑；最近播放与最多播放；我的歌单；公开歌单。手机端两组入口均保持每行两个，桌面/平板的推荐播放三项同排、快捷入口四项同排。设置页“首页布局”可分别控制三项推荐播放入口的显示状态及 1-3 顺序、四项快捷入口和四个发现模块的显示状态及 1-4 顺序，并可独立隐藏底部“我的歌单 / 公开歌单”板块；“推荐播放 / 快捷入口 / 专辑与播放 / 歌单”四组均有总开关，总开关关闭时批量关闭并折叠全部子项，开启时批量恢复全部子项；旧歌手/专辑首页板块不再展示。
 - “每日推荐”每天生成最多 30 首：直接收藏歌曲按收藏总数动态取样（少于 10 首取 1 首、10-29 首取 2 首、30 首以上取 4 首），再取 8 首收藏歌手相关歌曲、9 首最近/最多播放相关歌曲，剩余名额由随机探索补齐；直接收藏歌曲必须从其他候选池剔除，避免绕过动态配额。保存最近 7 天推荐历史，直接收藏歌曲 5 天内不重复、其他推荐 3 天内不重复；严格候选不足时按随机探索、收藏歌手相关、播放习惯、直接收藏的顺序补齐，仍不足才从最早日期开始逐步解除冷却。统一按“歌手+歌名”去重并按 FLAC > APE > MP3 保留一个版本，排除生成时播放队列已有歌曲并尽量避免同歌手连续。当天结果本地复用，“换一批”强制重新生成并合并进当天历史；详情页支持播放全部、刷新以及保存到已有个人歌单或创建新歌单，退出登录、切换账号或关闭入口会清除推荐缓存和历史。
 - “随便听听”每次生成最多 30 首：从随机候选中优先选择从未播放、距离上次播放更久、播放次数更少的歌曲，再优先选择与最近/最多播放专辑的歌手和流派反差较大的歌曲；按“歌手+歌名”去重并保留 FLAC > APE > MP3 的最高品质版本，排除当前播放队列并尽量避免同歌手连续。入口支持详情、播放全部和换一批，但不持久化每日历史。
+- 设置页提供全平台“AI 智能推荐”，默认关闭；可保存多个 OpenAI Chat Completions 兼容服务并分别启用，推荐时按配置列表顺序尝试所有已启用服务，单项缺少 Key、超时、网络错误、非成功状态或响应格式异常时继续下一项，全部失败后使用原本地结果；没有启用的服务时总开关必须自动关闭。服务配置包含启用状态、名称、可编辑地址、API Key 和可编辑模型名称，提供 ChatGPT、DeepSeek、Tencent、Bailian 四个快捷按钮并直接填充名称和地址；可依据当前聊天补全地址及 API Key 请求同路径版本的 `/models` 列表供选择，仍允许手工输入模型，也保留保存前/保存后连接测试。普通设置只持久化服务元数据，API Key 始终单独写入系统安全存储，不进入设置 JSON 或日志。启用后每日推荐从四类本地候选池中均衡抽取最多 80 首交给 AI 排优先级，再由原有本地配额、冷却、品质去重和队列排除规则确定最终结果；随便听听先按原本地规则生成最多 80 首候选供 AI 排序并取 30 首。连接测试和模型列表请求最长等待 20 秒，实际推荐排序单个服务最长等待 90 秒；运行日志需区分每日推荐与随便听听，记录实际服务、候选数、成功耗时及故障转移。发送内容只包含临时编号、标题、歌手、专辑、流派、播放次数、上次播放日期和候选来源，不发送 Navidrome ID、流地址、封面地址、歌词、账号或服务凭据；曲库随机始终不接入 AI。
 - “曲库随机”不暴露播放队列，内部按 10 首一批维护前进式隐藏队列，播放到当前批次第 8 首时后台追加下一批 10 首，并在当前会话内按“歌手+歌名”去重；播放模式固定显示为随机，只允许向下一首前进，禁用上一首、模式切换和队列入口。普通歌曲、歌单或电台播放会结束该随机会话，隐藏队列不写入下次启动恢复的播放会话。
 - 全平台所有开关使用统一的 80% 视觉缩放，文字和整行交互区域保持正常尺寸。
 - 检查更新固定读取 `https://file.zuitimes.com/zmusic/0/update.json`，不兼容旧 `/zmusic/update.json` 地址；五端正式发布清单按 `windows / android / android-dilink / macos / ios` 提供平台下载信息。每个平台节点同时提供 `downloadUrl` 默认通道和 `githubDownloadUrl` GitHub 通道，更新弹窗默认选择现有文件服务器，用户可手动切换 GitHub；两条地址下载后只校验同一个 SHA256，不再读取或计算 MD5。
@@ -49,6 +50,7 @@
 - 我的歌单工具使用独立内容页，不使用小弹窗：同步页支持自定义目标歌单名、可选“不同歌手同名歌曲”匹配和 APE/FLAC/MP3 高品质优先；合并页选择来源歌单和具体歌曲后再选择目标歌单，仅把勾选歌曲加入目标；批量添加页先搜索当前曲库并多选，再选择目标歌单。桌面和 Android 平板保留左右双栏及合并互换，Android 手机（小于 510dp）使用“选择歌曲 → 选择目标歌单 → 完成”的分步流程且不显示互换按钮；合并和批量添加的歌单下拉框不重复显示“选择来源/目标歌单”标题，同步页字段仍使用固定外部标题。
 - 远程歌单详情的歌曲数放在封面下方，简介放在标题下方；简介超过 50 个字符时截断为 `...`，点击展开全文。自己的歌单支持批量移除：首次点击进入多选，按钮实时显示已选数，再点击后二次确认并按倒序索引提交；取消确认保留选择，离开详情页会清空批量状态。公开歌单共用同一头部布局，但不显示管理操作。歌单歌曲请求最长等待 45 秒，超时后必须结束加载并释放在途请求，避免同一歌单永久卡在加载中。
 - 播放队列入口在底部播放栏；歌词详情页不再单独放“歌单”浮动按钮。
+- 桌面与普通平板底部播放栏使用真实背景模糊和低透明度玻璃遮罩；浅色主题必须保留可见的背景透色、顶部高光与向上阴影，不能退化成接近纯白的实心面板。DiLink 兼容版保留透明遮罩、高光和阴影但跳过持续实时模糊，手机悬浮迷你播放栏继续使用现有紧凑样式。
 
 ## 导入导出格式
 
@@ -103,7 +105,7 @@
 ## 打包记忆
 
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
-- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.2+30`。
+- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.3+31`。
 - 正式发布必须等待 GitHub Actions 的 Windows、Android 通用版、Android DiLink、macOS、iOS 以及最终 Release 任务全部成功；随后从该 GitHub Release 下载五个最终资产到本地 `dist`，以下载后的真实文件验证版本、Android 证书/ABI/签名、文件大小和哈希。只有实物验证通过后，才根据这五个下载文件重新生成 `dist/update.json`；禁止根据构建前文件、本机文件或 Actions 临时产物预填最终大小和哈希。
 - macOS 源码已补齐；“打测试包”仍只在当前 Windows 主机生成 Windows、Android 通用版和 Android DiLink 三个产物，macOS/iOS 不做本地交叉编译。“打包/打正式包”则由 GitHub Actions 的 macOS runner 生成 macOS 和 iOS 产物，共同组成五端正式 Release。
 - GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
@@ -129,6 +131,22 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-09-02：修复每日推荐与随便听听同时使用同一 AI 服务时可能出现的间歇性超时。两个推荐加载任务此前会并发向 DeepSeek 发起 80 首候选的排序请求，服务端可能排队导致其中一个在 90 秒边界超时；`AiRecommendationClient` 现在串行执行 AI 排序请求，并将排序响应限制为最多 1,024 个 token、最多返回 30 个候选编号，剩余歌曲继续由本地推荐规则补齐，不改变推荐配额、去重或失败回退行为。执行 Dart format 与 `git diff --check`；按普通功能修改规则未运行 `flutter analyze`、未运行测试、未打包，版本保持 `1.1.2+30`。
+
+- 2026-09-01：完成 AI 服务多配置、模型列表获取和故障转移改动的 `1.1.2+30` 三端测试打包，版本号及内部 build/versionCode 均保持不变。静态分析首次发现 AI 服务菜单项使用可空回调的冗余空值断言，已改为直接传递可空回调；最终 `flutter analyze --no-pub` 无问题，完整 `flutter test --no-pub` 161 项全部通过。Windows 在 Visual Studio x64 环境下完成 CMake/Ninja 与 NSIS 构建，安装包 `dist/zmusic-windows-x64.exe` 大小 `16,703,081` 字节、SHA256 `EF142CEADEF4CD10F7C7180ABB5C541E8C33F9DE6EAA3E9A18E99A0712439C08`，ProductVersion `1.1.2`、FileVersion `1.1.2.30`；因用户已有 `D:\Programs\Zmusic\zmusic.exe` 正在运行且客户端为单实例，本轮未强制终止用户进程执行 runner 启动烟测。Android 通用版 `dist/zmusic-android.apk` 大小 `24,107,563` 字节、SHA256 `652FFEE763C2FCB8C59435E1713CDF61682E124A086C59E2AAC5699B5EA32280`，target API 36、V2 签名；DiLink 版使用显式 `-PzmusicDiLinkCompatibility=true` 独立构建，`dist/zmusic-android-dilink.apk` 大小 `24,646,775` 字节、SHA256 `4A55F8E33E6D0D37F37F513AA90A0C57BB6599443A14D4451D79145F6A062393`，target API 29、V1-only 签名。两份 APK 均为 `1.1.2+30`、最低 API 24、只含 `armeabi-v7a / arm64-v8a`，通过 16 KB zipalign，签名证书 SHA256 均为 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。本轮未生成或覆盖 `dist/update.json`，其 SHA256 仍为 `693F3098265678A2587F04649F8F741D280DE254D732D431D6B4E7F5B7C10531`。
+
+- 2026-08-31：完善全平台 AI 服务配置和推荐故障转移。设置页“添加”入口移到 AI 智能推荐板块右上角并删除底部重复服务行；服务类型改为 ChatGPT、DeepSeek、Tencent、Bailian 四个快捷按钮，点击直接填充名称与地址，API Key 调整到模型名称上方并可调用 OpenAI 兼容 `/models` 接口获取、搜索和选择模型，模型名称仍可自定义。每项配置新增独立启用开关，允许同时启用多个服务；每日推荐和随便听听按列表顺序逐项尝试，单项失败自动使用下一项，全部失败才回退本地推荐，无启用项时 AI 总开关自动关闭。旧设置首次迁移时只启用原先选中的服务，避免升级后意外启用全部配置。执行改动文件 Dart format 与 `git diff --check`；按普通功能修改规则未运行 `flutter analyze`、未运行测试、未打包，版本保持 `1.1.2+30`。
+
+- 2026-08-31：增强桌面与普通平板底部播放栏的毛玻璃透明效果。原播放栏只有 68% 浅色实心遮罩，没有实际背景模糊；现在增加 `BackdropFilter` 20px 模糊，将浅色遮罩降为 42%、深色降为 28%，并加入顶部玻璃高光与向上阴影，使主题底色和用户背景图能明显透入。DiLink 兼容版为控制持续 GPU 负载，只应用新的透明遮罩、高光和阴影，跳过实时模糊；手机悬浮迷你播放栏布局与配色保持不变。执行 Dart format 与 `git diff --check`；按普通功能修改规则未运行 `flutter analyze`、未运行测试、未打包，版本保持 `1.1.2+30`。
+
+- 2026-08-31：修复 AI 服务连接测试成功但推荐刷新容易超时的问题。连接测试继续使用 20 秒最小请求，包含最多 80 首候选的每日推荐/随便听听排序请求由 30 秒延长到 90 秒，适配模型生成和较差网络环境；AI 排序日志新增具体推荐类型，成功时记录候选数与耗时，失败仍无条件回退原本地推荐。执行 Dart format 与 `git diff --check`；按普通功能修改规则未运行 `flutter analyze`、未运行测试、未打包，版本保持 `1.1.2+30`。
+
+- 2026-08-31：完成 AI 智能推荐与默认背景图移除改动的 `1.1.2+30` 三端测试打包，版本号及内部 build/versionCode 均保持不变。静态分析先发现 AI 服务下拉框使用已弃用的 `DropdownButtonFormField.value`，已按 Flutter 新接口改为 `initialValue`；完整测试先发现两条旧用例把任意“添加”文字误判为旧音源入口，已将断言收窄为明确的音源管理操作并确认 AI 服务添加按钮存在。最终 `flutter analyze --no-pub` 无问题，完整 `flutter test --no-pub` 161 项全部通过。Windows Release 在 Visual Studio x64 环境下完成 CMake/Ninja 与 NSIS 构建，安装包 `dist/zmusic-windows-x64.exe` 大小 `16,693,981` 字节、SHA256 `9647AC111AA9D7BCA6B9B7CAA7FAE57ED7B009C14F8897309D02FDDE3F72F0E8`，ProductVersion `1.1.2`、FileVersion `1.1.2.30`；因用户已有 `D:\Programs\Zmusic\zmusic.exe` 正在运行且客户端为单实例，本轮未强制终止用户进程执行 runner 启动烟测。Android 通用版 `dist/zmusic-android.apk` 大小 `24,081,051` 字节、SHA256 `9005267EA293B57D6C7523652C16DFF2489453AFF15DE3EE77ECFEBF14AA5CCF`，target API 36、V2 签名；DiLink 版 `dist/zmusic-android-dilink.apk` 大小 `24,072,841` 字节、SHA256 `F7BFC741C9AB6FAEBAE29B51CB450A2C5D23F3F6CCCB38FE7C045682E7255801`，target API 29、V1-only 签名。两份 APK 均为 `1.1.2+30`、最低 API 24、只含 `armeabi-v7a / arm64-v8a`，通过 16 KB zipalign，签名证书 SHA256 均为 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。本轮未生成或覆盖 `dist/update.json`，其 SHA256 仍为 `693F3098265678A2587F04649F8F741D280DE254D732D431D6B4E7F5B7C10531`。
+
+- 2026-08-31：移除全平台内置默认背景图。背景路径为空、文件不存在或图片加载失败时不再回退品牌图片，只保留当前明暗主题底色；用户上传且文件有效时继续按现有全屏裁切方式显示，独立 Logo 层不受影响。同步移除默认背景资源的 Flutter 打包声明及资源文件，设置页空背景文案改为“未设置背景图”。执行 Dart format 与 `git diff --check`；按普通功能修改规则未运行 `flutter analyze`、未运行测试、未打包，版本保持 `1.1.2+30`。
+
+- 2026-08-31：新增全平台 AI 智能推荐配置与混合推荐链路。设置页支持多个服务配置、唯一当前服务、总开关、ChatGPT/DeepSeek/Tencent/Bailian 快捷地址、可编辑模型与地址、API Key 显隐、无需测试直接保存以及已保存/未保存配置连接测试；API Key 直接使用系统安全存储，普通设置只保存元数据。每日推荐对四类本地候选池做确定性均衡抽样并让 AI 仅提供优先级，最终 30 首仍经过原收藏配额、历史冷却、最高品质去重、当前队列排除和相邻歌手处理；随便听听保留原本地 30 首作为严格兜底，启用 AI 时才额外生成 80 首候选排序。AI 请求只发送临时编号和必要歌曲/播放统计元数据，所有请求异常和无效响应均记录无敏感信息的警告并回退本地结果，曲库随机未接入 AI。执行改动文件 Dart format 与 `git diff --check`；按普通功能修改规则未运行 `flutter analyze`、未运行测试、未打包，版本保持 `1.1.2+30`。
 
 - 2026-08-28：完成 `1.1.2+30` 五端正式发布。发布前 `flutter analyze --no-pub` 无问题，完整 `flutter test --no-pub` 161 项全部通过；发布提交 `dc81df0` 已推送到 `main`，标签 `v1.1.2` 触发 GitHub Actions `Build five-platform release`（run `33147653449`），Windows、Android 通用版、Android DiLink、macOS、iOS 和最终 Release 六项全部成功，Release 地址为 `https://github.com/zlcece/zmiusc/releases/tag/v1.1.2`。从 Release 下载五个最终资产覆盖本地 `dist` 后完成实物验证：Windows `zmusic-windows-x64.exe` 大小 `16,684,565` 字节、MD5 `08E49E1AAEAE68C9D583747E9862A4B1`、SHA256 `988C9DBCE3142A6FA496C96776869782FB0684321DAD4E23ECDA4AB9A86F9340`，ProductVersion `1.1.2`、FileVersion `1.1.2.30`；Android 通用版 `zmusic-android.apk` 大小 `24,074,069` 字节、MD5 `1956A13FEB84D36E3FC6EB33EFD7C227`、SHA256 `DF4ECEAC39B6371932121CE519CA7A9D483A90E930206D1F954F4AEC5D8F92C8`；DiLink `zmusic-android-dilink.apk` 大小 `24,065,855` 字节、MD5 `9419BC7057514BB03F9D4D7D7B2C1CE5`、SHA256 `77F3F0D5A8689126DC0C1A68DFC2D99A3BCD1DE99C962E7B02B6E14CBF1D9477`。两份 Android 包均为 `1.1.2+30`、最低 API 24、只含 `armeabi-v7a / arm64-v8a` 并通过 16 KB zipalign；通用版 target 36/V2、DiLink target 29/V1-only，证书 SHA256 均为 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。macOS `zmusic-macos.dmg` 大小 `32,961,532` 字节、MD5 `DCC50C1845224D3B5BA4A46851AEEB5D`、SHA256 `C8C54D62EDFAA7C9D203C995FAC134F58F1A98F1ED8D7C4A51C4D90F1D1A1AF8`，包内版本 `1.1.2(30)`、最低 macOS 10.15；iOS `zmusic-ios-unsigned.ipa` 大小 `11,120,432` 字节、MD5 `8888509355ECA2FCB5EB0DC0F4DE9C99`、SHA256 `43A71B28F9AF5630EC2C0C4D2C4C3B939F7DE21D9F79E81485A0792E08B4F688`，包内版本 `1.1.2(30)`、最低 iOS 13.0。最终 `dist/update.json` 已按五个平台分别写入更新内容、默认/GitHub 双地址、真实大小、兼容旧客户端的 MD5 和 SHA256；清单大小 `5,358` 字节、MD5 `A4B3798C4E455EBA7F7BC6E9FFEB9281`、SHA256 `693F3098265678A2587F04649F8F741D280DE254D732D431D6B4E7F5B7C10531`。
 

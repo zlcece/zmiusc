@@ -230,6 +230,19 @@ class LibraryStore {
     await _writeString(_settingsKey, jsonEncode(settings.toJson()));
   }
 
+  Future<String?> loadAiServiceApiKey(String serviceId) async {
+    final value = await _secureStorage.read(key: _aiServiceApiKey(serviceId));
+    return value == null || value.isEmpty ? null : value;
+  }
+
+  Future<void> saveAiServiceApiKey(String serviceId, String apiKey) async {
+    await _secureStorage.write(key: _aiServiceApiKey(serviceId), value: apiKey);
+  }
+
+  Future<void> deleteAiServiceApiKey(String serviceId) async {
+    await _secureStorage.delete(key: _aiServiceApiKey(serviceId));
+  }
+
   Future<double?> loadDesktopPlayerVolume() async {
     final value = double.tryParse(
       await _readString(_desktopPlayerVolumeKey) ?? '',
@@ -330,6 +343,8 @@ class LibraryStore {
   }
 
   String _passwordKey(String id) => 'server_password_$id';
+
+  String _aiServiceApiKey(String id) => 'ai_service_api_key_$id';
 }
 
 class PlaybackSession {

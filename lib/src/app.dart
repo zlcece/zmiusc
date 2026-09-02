@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'ai_recommendation.dart';
 import 'app_controller.dart';
 import 'app_logger.dart';
 import 'app_update.dart';
@@ -23,7 +24,6 @@ import 'playlist_tools_page.dart';
 import 'settings_models.dart';
 
 const String _appName = 'Zmusic';
-const String _brandBackgroundAsset = 'assets/branding/zmusic_note.webp';
 const double _defaultPlayerVolume = 0.55;
 const double _mobilePlayerVolume = 1;
 const MethodChannel _androidTaskChannel = MethodChannel('com.zmusic.app/task');
@@ -1649,10 +1649,11 @@ class _BackgroundWatermark extends StatelessWidget {
             ),
           ),
         ),
-        Opacity(
-          opacity: isDark ? 0.08 : 0.07,
-          child: _BrandBackgroundImage(imagePath: backgroundPath),
-        ),
+        if (backgroundPath.trim().isNotEmpty)
+          Opacity(
+            opacity: isDark ? 0.08 : 0.07,
+            child: _BrandBackgroundImage(imagePath: backgroundPath),
+          ),
         if (logoPath.trim().isNotEmpty && logoPath != backgroundPath)
           Opacity(
             opacity: isDark ? 0.09 : 0.08,
@@ -1682,11 +1683,10 @@ class _BrandBackgroundImage extends StatelessWidget {
         file,
         fit: BoxFit.cover,
         alignment: Alignment.center,
-        errorBuilder: (context, error, stackTrace) =>
-            const _DefaultBrandBackgroundImage(),
+        errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
       );
     }
-    return const _DefaultBrandBackgroundImage();
+    return const SizedBox.shrink();
   }
 }
 
@@ -1704,20 +1704,6 @@ class _BrandLogoImage extends StatelessWidget {
     return Image.file(
       file,
       fit: BoxFit.contain,
-      errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
-    );
-  }
-}
-
-class _DefaultBrandBackgroundImage extends StatelessWidget {
-  const _DefaultBrandBackgroundImage();
-
-  @override
-  Widget build(BuildContext context) {
-    return Image.asset(
-      _brandBackgroundAsset,
-      fit: BoxFit.cover,
-      alignment: Alignment.center,
       errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
     );
   }
@@ -1919,6 +1905,7 @@ class _SettingsPageState extends State<_SettingsPage> {
   late Future<int> _cacheSizeFuture;
   late Future<String> _appVersionFuture;
   bool _checkingForUpdate = false;
+  final Set<String> _testingAiServices = <String>{};
   int _usernameTapCount = 0;
   Timer? _usernameTapResetTimer;
 
@@ -2194,6 +2181,49 @@ class _SettingsPageState extends State<_SettingsPage> {
                       ],
                     ),
                     _SettingsSection(
+                      title: 'AI 智能推荐',
+                      action: TextButton.icon(
+                        key: const ValueKey('settings-ai-service-add'),
+                        onPressed: () => _editAiService(null),
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('添加'),
+                      ),
+                      children: [
+                        CompactSwitchListTile(
+                          key: const ValueKey('ai-recommendation-enabled'),
+                          title: const Text('启用 AI 智能推荐'),
+                          subtitle: const Text('按列表顺序尝试已启用服务，全部失败时使用本地推荐'),
+                          value: _settings.aiRecommendationEnabled,
+                          onChanged: (value) =>
+                              unawaited(_setAiRecommendationEnabled(value)),
+                        ),
+                        if (_settings.aiServices.isNotEmpty) ...[
+                          const Divider(height: 1),
+                          for (
+                            var index = 0;
+                            index < _settings.aiServices.length;
+                            index++
+                          ) ...[
+                            _AiServiceTile(
+                              service: _settings.aiServices[index],
+                              isTesting: _testingAiServices.contains(
+                                _settings.aiServices[index].id,
+                              ),
+                              onTest: () => _testSavedAiService(
+                                _settings.aiServices[index],
+                              ),
+                              onEdit: () =>
+                                  _editAiService(_settings.aiServices[index]),
+                              onDelete: () =>
+                                  _deleteAiService(_settings.aiServices[index]),
+                            ),
+                            if (index < _settings.aiServices.length - 1)
+                              const Divider(height: 1),
+                          ],
+                        ],
+                      ],
+                    ),
+                    _SettingsSection(
                       title: '外观',
                       children: [
                         _ThemeSettingTile(controller: widget.controller),
@@ -2221,7 +2251,7 @@ class _SettingsPageState extends State<_SettingsPage> {
                           title: '背景图',
                           subtitle: Text(
                             _settings.backgroundPath.isEmpty
-                                ? '使用默认图片'
+                                ? '未设置背景图'
                                 : _settings.backgroundPath,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -2539,6 +2569,97 @@ class _SettingsPageState extends State<_SettingsPage> {
     }
   }
 
+  Future<void> _setAiRecommendationEnabled(bool enabled) async {
+    try {
+      await widget.controller.setAiRecommendationEnabled(enabled);
+    } catch (error) {
+      if (mounted) {
+        _showSourceMessage(context, _formatError(error));
+      }
+    }
+  }
+
+  Future<void> _editAiService(AiServiceConfig? service) async {
+    final result = await showDialog<_AiServiceEditorResult>(
+      context: context,
+      builder: (context) => _AiServiceEditorDialog(
+        controller: widget.controller,
+        service: service,
+      ),
+    );
+    if (result == null) {
+      return;
+    }
+    try {
+      await widget.controller.saveAiService(result.service, result.apiKey);
+      if (mounted) {
+        _showSourceMessage(
+          context,
+          service == null ? 'AI 服务已添加。' : 'AI 服务已保存。',
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        _showSourceMessage(context, _formatError(error));
+      }
+    }
+  }
+
+  Future<void> _testSavedAiService(AiServiceConfig service) async {
+    if (!_testingAiServices.add(service.id)) {
+      return;
+    }
+    setState(() {});
+    try {
+      final apiKey = await widget.controller.loadAiServiceApiKey(service.id);
+      await widget.controller.testAiService(service, apiKey);
+      if (mounted) {
+        _showSourceMessage(context, '${service.name} 连接成功。');
+      }
+    } catch (error) {
+      if (mounted) {
+        _showSourceMessage(context, '测试失败：${_formatError(error)}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _testingAiServices.remove(service.id));
+      }
+    }
+  }
+
+  Future<void> _deleteAiService(AiServiceConfig service) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除 AI 服务'),
+        content: Text('确定删除“${service.name}”及其 API Key 吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    try {
+      await widget.controller.deleteAiService(service.id);
+      if (mounted) {
+        _showSourceMessage(context, 'AI 服务已删除。');
+      }
+    } catch (error) {
+      if (mounted) {
+        _showSourceMessage(context, '删除失败：${_formatError(error)}');
+      }
+    }
+  }
+
   void _moveHomePlayback(HomePlaybackSection section, int offset) {
     final order = _moveOrderedItem(
       _settings.homePlaybackOrder,
@@ -2811,6 +2932,725 @@ class _SettingsPageState extends State<_SettingsPage> {
     final mib = kib / 1024;
     return '${mib.toStringAsFixed(1)} MB';
   }
+}
+
+enum _AiServiceAction { test, edit, delete }
+
+class _AiServiceTile extends StatelessWidget {
+  const _AiServiceTile({
+    required this.service,
+    required this.isTesting,
+    required this.onTest,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final AiServiceConfig service;
+  final bool isTesting;
+  final VoidCallback onTest;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = Uri.tryParse(service.endpoint);
+    final host = uri?.host ?? service.endpoint;
+    final statusLabel = service.enabled ? '已启用' : '未启用';
+    return ListTile(
+      key: ValueKey('ai-service-${service.id}'),
+      leading: Icon(
+        service.enabled
+            ? Icons.check_circle_outline_rounded
+            : Icons.pause_circle_outline_rounded,
+        color: service.enabled
+            ? Theme.of(context).colorScheme.primary
+            : Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+      title: Text(service.name),
+      subtitle: Text(
+        '$statusLabel · ${service.model} · $host',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: isTesting
+          ? const SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : PopupMenuButton<_AiServiceAction>(
+              tooltip: 'AI 服务操作',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onSelected: (action) {
+                switch (action) {
+                  case _AiServiceAction.test:
+                    onTest();
+                    break;
+                  case _AiServiceAction.edit:
+                    onEdit();
+                    break;
+                  case _AiServiceAction.delete:
+                    onDelete();
+                    break;
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: _AiServiceAction.test,
+                  child: ListTile(
+                    leading: Icon(Icons.cable_rounded),
+                    title: Text('测试连接'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _AiServiceAction.edit,
+                  child: ListTile(
+                    leading: Icon(Icons.edit_outlined),
+                    title: Text('编辑'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _AiServiceAction.delete,
+                  child: ListTile(
+                    leading: Icon(Icons.delete_outline_rounded),
+                    title: Text('删除'),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _AiServiceEditorResult {
+  const _AiServiceEditorResult({required this.service, required this.apiKey});
+
+  final AiServiceConfig service;
+  final String apiKey;
+}
+
+class _AiServiceEditorDialog extends StatefulWidget {
+  const _AiServiceEditorDialog({
+    required this.controller,
+    required this.service,
+  });
+
+  final AppController controller;
+  final AiServiceConfig? service;
+
+  @override
+  State<_AiServiceEditorDialog> createState() => _AiServiceEditorDialogState();
+}
+
+class _AiServiceEditorDialogState extends State<_AiServiceEditorDialog> {
+  static const _quickPresets = <AiServicePreset>[
+    AiServicePreset.chatGpt,
+    AiServicePreset.deepSeek,
+    AiServicePreset.tencent,
+    AiServicePreset.bailian,
+  ];
+
+  final _formKey = GlobalKey<FormState>();
+  late final String _serviceId;
+  late final TextEditingController _nameController;
+  late final TextEditingController _endpointController;
+  late final TextEditingController _modelController;
+  final TextEditingController _apiKeyController = TextEditingController();
+  late AiServicePreset _preset;
+  late bool _enabled;
+  bool _loadingApiKey = false;
+  bool _showApiKey = false;
+  bool _testing = false;
+  bool _fetchingModels = false;
+  String? _testMessage;
+  bool _testSucceeded = false;
+
+  bool get _networkBusy => _testing || _fetchingModels;
+
+  @override
+  void initState() {
+    super.initState();
+    final service = widget.service;
+    _serviceId = service?.id ?? widget.controller.createAiServiceId();
+    _preset = _presetForEndpoint(service?.endpoint ?? '');
+    if (service == null) {
+      _preset = AiServicePreset.chatGpt;
+    }
+    _enabled = service?.enabled ?? true;
+    _nameController = TextEditingController(
+      text: service?.name ?? _preset.label,
+    );
+    _endpointController = TextEditingController(
+      text: service?.endpoint ?? _preset.endpoint,
+    );
+    _modelController = TextEditingController(text: service?.model ?? '');
+    if (service != null) {
+      _loadingApiKey = true;
+      unawaited(_loadApiKey(service.id));
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _endpointController.dispose();
+    _modelController.dispose();
+    _apiKeyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadApiKey(String serviceId) async {
+    try {
+      final apiKey = await widget.controller.loadAiServiceApiKey(serviceId);
+      if (mounted) {
+        _apiKeyController.text = apiKey;
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _testSucceeded = false;
+          _testMessage = '读取 API Key 失败：${_formatError(error)}';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _loadingApiKey = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final compact = _isPhoneWidth(context);
+    return Dialog(
+      insetPadding: _responsiveDialogInsetPadding(context),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 580,
+          maxHeight:
+              MediaQuery.sizeOf(context).height * (compact ? 0.94 : 0.86),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.service == null ? '添加 AI 服务' : '编辑 AI 服务',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 14 : 20,
+                  16,
+                  compact ? 14 : 20,
+                  12,
+                ),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '服务类型',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final columnCount = constraints.maxWidth < 420
+                              ? 2
+                              : 4;
+                          final buttonWidth =
+                              (constraints.maxWidth - (columnCount - 1) * 8) /
+                              columnCount;
+                          return Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final preset in _quickPresets)
+                                SizedBox(
+                                  width: buttonWidth,
+                                  height: 40,
+                                  child: preset == _preset
+                                      ? FilledButton(
+                                          onPressed: _networkBusy
+                                              ? null
+                                              : () => _applyPreset(preset),
+                                          child: Text(preset.label),
+                                        )
+                                      : OutlinedButton(
+                                          onPressed: _networkBusy
+                                              ? null
+                                              : () => _applyPreset(preset),
+                                          child: Text(preset.label),
+                                        ),
+                                ),
+                            ],
+                          );
+                        },
+                      ),
+                      CompactSwitchListTile(
+                        key: const ValueKey('ai-service-enabled'),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('启用此服务'),
+                        subtitle: const Text('推荐失败时按列表顺序继续尝试下一项'),
+                        value: _enabled,
+                        onChanged: _networkBusy
+                            ? null
+                            : (value) => setState(() => _enabled = value),
+                      ),
+                      TextFormField(
+                        controller: _nameController,
+                        enabled: !_networkBusy,
+                        textInputAction: TextInputAction.next,
+                        onChanged: (_) => _clearTestResult(),
+                        decoration: const InputDecoration(
+                          labelText: '服务名称',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: _requiredValue,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _endpointController,
+                        enabled: !_networkBusy,
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.next,
+                        onChanged: _handleEndpointChanged,
+                        decoration: const InputDecoration(
+                          labelText: '服务地址',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: _validateEndpoint,
+                      ),
+                      const SizedBox(height: 12),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final apiKeyField = TextFormField(
+                            controller: _apiKeyController,
+                            enabled: !_networkBusy && !_loadingApiKey,
+                            obscureText: !_showApiKey,
+                            enableSuggestions: false,
+                            autocorrect: false,
+                            textInputAction: TextInputAction.next,
+                            onChanged: (_) => _clearTestResult(),
+                            decoration: InputDecoration(
+                              labelText: 'API Key',
+                              border: const OutlineInputBorder(),
+                              suffixIcon: _loadingApiKey
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(14),
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : IconButton(
+                                      tooltip: _showApiKey
+                                          ? '隐藏 API Key'
+                                          : '显示 API Key',
+                                      onPressed: () => setState(
+                                        () => _showApiKey = !_showApiKey,
+                                      ),
+                                      icon: Icon(
+                                        _showApiKey
+                                            ? Icons.visibility_off_outlined
+                                            : Icons.visibility_outlined,
+                                      ),
+                                    ),
+                            ),
+                            validator: _requiredValue,
+                          );
+                          final fetchButton = SizedBox(
+                            height: 56,
+                            child: OutlinedButton.icon(
+                              key: const ValueKey('ai-service-fetch-models'),
+                              onPressed: _networkBusy || _loadingApiKey
+                                  ? null
+                                  : _fetchModels,
+                              icon: _fetchingModels
+                                  ? const SizedBox.square(
+                                      dimension: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.download_rounded),
+                              label: Text(_fetchingModels ? '获取中' : '获取模型'),
+                            ),
+                          );
+                          if (constraints.maxWidth >= 460) {
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(child: apiKeyField),
+                                const SizedBox(width: 8),
+                                fetchButton,
+                              ],
+                            );
+                          }
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              apiKeyField,
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: fetchButton,
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _modelController,
+                        enabled: !_networkBusy,
+                        textInputAction: TextInputAction.done,
+                        onChanged: (_) => _clearTestResult(),
+                        decoration: const InputDecoration(
+                          labelText: '模型名称',
+                          helperText: '可从模型列表选择，也可自定义输入',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: _requiredValue,
+                        onFieldSubmitted: (_) {
+                          if (!_networkBusy && !_loadingApiKey) {
+                            _save();
+                          }
+                        },
+                      ),
+                      if (_testMessage != null) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          _testMessage!,
+                          style: TextStyle(
+                            color: _testSucceeded
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    key: const ValueKey('ai-service-test'),
+                    onPressed: _networkBusy || _loadingApiKey ? null : _test,
+                    icon: _testing
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.cable_rounded),
+                    label: Text(_testing ? '测试中' : '测试'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton.icon(
+                    key: const ValueKey('ai-service-save'),
+                    onPressed: _networkBusy || _loadingApiKey ? null : _save,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('保存'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _applyPreset(AiServicePreset preset) {
+    setState(() {
+      _preset = preset;
+      _nameController.text = preset.label;
+      _endpointController.text = preset.endpoint;
+      _testMessage = null;
+    });
+  }
+
+  void _handleEndpointChanged(String endpoint) {
+    final preset = _presetForEndpoint(endpoint);
+    if (_preset != preset || _testMessage != null) {
+      setState(() {
+        _preset = preset;
+        _testMessage = null;
+      });
+    }
+  }
+
+  void _clearTestResult() {
+    if (_testMessage != null && !_networkBusy) {
+      setState(() => _testMessage = null);
+    }
+  }
+
+  Future<void> _fetchModels() async {
+    final endpointError = _validateEndpoint(_endpointController.text);
+    if (endpointError != null) {
+      setState(() {
+        _testSucceeded = false;
+        _testMessage = endpointError;
+      });
+      return;
+    }
+    if (_apiKeyController.text.trim().isEmpty) {
+      setState(() {
+        _testSucceeded = false;
+        _testMessage = '请先填写 API Key。';
+      });
+      return;
+    }
+
+    List<String>? models;
+    setState(() {
+      _fetchingModels = true;
+      _testMessage = null;
+    });
+    try {
+      models = await widget.controller.fetchAiServiceModels(
+        endpoint: _endpointController.text,
+        apiKey: _apiKeyController.text,
+      );
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _testSucceeded = false;
+          _testMessage = '获取模型失败：${_formatError(error)}';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _fetchingModels = false);
+      }
+    }
+    if (!mounted || models == null) {
+      return;
+    }
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => _AiModelPickerDialog(
+        models: models!,
+        selectedModel: _modelController.text.trim(),
+      ),
+    );
+    if (selected != null && mounted) {
+      setState(() {
+        _modelController.text = selected;
+        _testSucceeded = true;
+        _testMessage = '已选择模型：$selected';
+      });
+    }
+  }
+
+  Future<void> _test() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    setState(() {
+      _testing = true;
+      _testMessage = null;
+    });
+    try {
+      await widget.controller.testAiService(
+        _currentService(),
+        _apiKeyController.text,
+      );
+      if (mounted) {
+        setState(() {
+          _testSucceeded = true;
+          _testMessage = '连接成功。';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _testSucceeded = false;
+          _testMessage = '测试失败：${_formatError(error)}';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _testing = false);
+      }
+    }
+  }
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    Navigator.of(context).pop(
+      _AiServiceEditorResult(
+        service: _currentService(),
+        apiKey: _apiKeyController.text.trim(),
+      ),
+    );
+  }
+
+  AiServiceConfig _currentService() {
+    return AiServiceConfig(
+      id: _serviceId,
+      name: _nameController.text.trim(),
+      endpoint: _endpointController.text.trim(),
+      model: _modelController.text.trim(),
+      enabled: _enabled,
+    );
+  }
+
+  String? _requiredValue(String? value) {
+    return value == null || value.trim().isEmpty ? '不能为空' : null;
+  }
+
+  String? _validateEndpoint(String? value) {
+    final requiredError = _requiredValue(value);
+    if (requiredError != null) {
+      return requiredError;
+    }
+    final uri = Uri.tryParse(value!.trim());
+    if (uri == null ||
+        !uri.hasAuthority ||
+        (uri.scheme != 'https' && uri.scheme != 'http')) {
+      return '请输入有效的 HTTP 或 HTTPS 地址';
+    }
+    return null;
+  }
+}
+
+class _AiModelPickerDialog extends StatefulWidget {
+  const _AiModelPickerDialog({
+    required this.models,
+    required this.selectedModel,
+  });
+
+  final List<String> models;
+  final String selectedModel;
+
+  @override
+  State<_AiModelPickerDialog> createState() => _AiModelPickerDialogState();
+}
+
+class _AiModelPickerDialogState extends State<_AiModelPickerDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final models = query.isEmpty
+        ? widget.models
+        : widget.models
+              .where((model) => model.toLowerCase().contains(query))
+              .toList();
+    return AlertDialog(
+      title: const Text('选择模型'),
+      content: SizedBox(
+        width: 460,
+        height: math.min(430.0, MediaQuery.sizeOf(context).height * 0.62),
+        child: Column(
+          children: [
+            TextField(
+              controller: _searchController,
+              autofocus: true,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: InputDecoration(
+                hintText: '搜索模型',
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清空',
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _query = '');
+                        },
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: models.isEmpty
+                  ? const Center(child: Text('没有匹配的模型'))
+                  : ListView.builder(
+                      itemCount: models.length,
+                      itemBuilder: (context, index) {
+                        final model = models[index];
+                        final selected = model == widget.selectedModel;
+                        return ListTile(
+                          dense: true,
+                          title: Text(
+                            model,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: selected
+                              ? Icon(
+                                  Icons.check_rounded,
+                                  color: Theme.of(context).colorScheme.primary,
+                                )
+                              : null,
+                          onTap: () => Navigator.of(context).pop(model),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+  }
+}
+
+AiServicePreset _presetForEndpoint(String endpoint) {
+  final normalized = endpoint.trim();
+  for (final preset in AiServicePreset.values) {
+    if (preset != AiServicePreset.custom && preset.endpoint == normalized) {
+      return preset;
+    }
+  }
+  return AiServicePreset.custom;
 }
 
 String _logLevelLabel(AppLogLevel level) {
@@ -3313,11 +4153,13 @@ class _SettingsSection extends StatelessWidget {
   const _SettingsSection({
     required this.title,
     required this.children,
+    this.action,
     super.key,
   });
 
   final String? title;
   final List<Widget> children;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -3330,14 +4172,24 @@ class _SettingsSection extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (title != null)
+            if (title != null || action != null)
               Padding(
                 padding: EdgeInsets.fromLTRB(16, compact ? 6 : 8, 16, 4),
-                child: Text(
-                  title!,
-                  style: compact
-                      ? Theme.of(context).textTheme.titleSmall
-                      : Theme.of(context).textTheme.titleMedium,
+                child: Row(
+                  children: [
+                    if (title != null)
+                      Expanded(
+                        child: Text(
+                          title!,
+                          style: compact
+                              ? Theme.of(context).textTheme.titleSmall
+                              : Theme.of(context).textTheme.titleMedium,
+                        ),
+                      )
+                    else
+                      const Spacer(),
+                    ?action,
+                  ],
                 ),
               ),
             ...children,
@@ -9109,43 +9961,63 @@ class _PlayerBar extends StatelessWidget {
     final track = player.currentTrack;
     final isPhoneShell =
         MediaQuery.sizeOf(context).width < _mobilePlayerWidthBreakpoint;
-
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: isPhoneShell
-            ? Colors.transparent
-            : _glassFillColor(context, lightAlpha: 0.68, darkAlpha: 0.32),
-        border: isPhoneShell
-            ? null
-            : Border(top: BorderSide(color: _glassBorderColor(context))),
-        boxShadow: isPhoneShell ? const <BoxShadow>[] : _glassShadow(context),
+    final content = SafeArea(
+      top: false,
+      child: Padding(
+        padding: isPhoneShell
+            ? const EdgeInsets.fromLTRB(16, 6, 16, 10)
+            : const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        child: track == null
+            ? const SizedBox(height: 56, child: Center(child: Text('暂无播放内容')))
+            : isPhoneShell
+            ? _mobileMiniPlayer(context)
+            : StreamBuilder<Duration>(
+                stream: player.positionStream,
+                initialData: player.position,
+                builder: (context, snapshot) {
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      final position = snapshot.data ?? Duration.zero;
+                      final isWide = constraints.maxWidth >= 1040;
+                      return isWide
+                          ? _widePlayer(context, position)
+                          : _narrowPlayer(context, position);
+                    },
+                  );
+                },
+              ),
       ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: isPhoneShell
-              ? const EdgeInsets.fromLTRB(16, 6, 16, 10)
-              : const EdgeInsets.fromLTRB(16, 10, 16, 12),
-          child: track == null
-              ? const SizedBox(height: 56, child: Center(child: Text('暂无播放内容')))
-              : isPhoneShell
-              ? _mobileMiniPlayer(context)
-              : StreamBuilder<Duration>(
-                  stream: player.positionStream,
-                  initialData: player.position,
-                  builder: (context, snapshot) {
-                    return LayoutBuilder(
-                      builder: (context, constraints) {
-                        final position = snapshot.data ?? Duration.zero;
-                        final isWide = constraints.maxWidth >= 1040;
-                        return isWide
-                            ? _widePlayer(context, position)
-                            : _narrowPlayer(context, position);
-                      },
-                    );
-                  },
-                ),
+    );
+    if (isPhoneShell) {
+      return content;
+    }
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final glassContent = DecoratedBox(
+      decoration: BoxDecoration(
+        color: _glassFillColor(context, lightAlpha: 0.42, darkAlpha: 0.28),
+        border: Border(
+          top: BorderSide(
+            color: Colors.white.withValues(alpha: isDark ? 0.18 : 0.72),
+          ),
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.32 : 0.1),
+            blurRadius: 18,
+            offset: const Offset(0, -6),
+          ),
+        ],
+      ),
+      child: content,
+    );
+    if (reduceArtworkMotion) {
+      return glassContent;
+    }
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: glassContent,
       ),
     );
   }

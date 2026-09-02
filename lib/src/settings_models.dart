@@ -47,6 +47,58 @@ const List<HomeDiscoverySection> defaultHomeDiscoveryOrder = [
   HomeDiscoverySection.frequentAlbums,
 ];
 
+class AiServiceConfig {
+  const AiServiceConfig({
+    required this.id,
+    required this.name,
+    required this.endpoint,
+    required this.model,
+    this.enabled = true,
+  });
+
+  final String id;
+  final String name;
+  final String endpoint;
+  final String model;
+  final bool enabled;
+
+  AiServiceConfig copyWith({
+    String? id,
+    String? name,
+    String? endpoint,
+    String? model,
+    bool? enabled,
+  }) {
+    return AiServiceConfig(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      endpoint: endpoint ?? this.endpoint,
+      model: model ?? this.model,
+      enabled: enabled ?? this.enabled,
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'endpoint': endpoint,
+      'model': model,
+      'enabled': enabled,
+    };
+  }
+
+  factory AiServiceConfig.fromJson(Map<String, Object?> json) {
+    return AiServiceConfig(
+      id: _readString(json, 'id'),
+      name: _readString(json, 'name'),
+      endpoint: _readString(json, 'endpoint'),
+      model: _readString(json, 'model'),
+      enabled: _readBool(json, 'enabled', fallback: true),
+    );
+  }
+}
+
 class AppSettings {
   const AppSettings({
     this.cacheDirectory = '',
@@ -70,6 +122,9 @@ class AppSettings {
     this.hiddenHomeDiscoveries = const <HomeDiscoverySection>{},
     this.showMyPlaylistSection = true,
     this.showPublicPlaylistSection = true,
+    this.aiRecommendationEnabled = false,
+    this.aiServices = const <AiServiceConfig>[],
+    this.activeAiServiceId = '',
     this.checkUpdatesOnStartup = true,
     this.logLevel = AppLogLevel.error,
   });
@@ -95,6 +150,9 @@ class AppSettings {
   final Set<HomeDiscoverySection> hiddenHomeDiscoveries;
   final bool showMyPlaylistSection;
   final bool showPublicPlaylistSection;
+  final bool aiRecommendationEnabled;
+  final List<AiServiceConfig> aiServices;
+  final String activeAiServiceId;
   final bool checkUpdatesOnStartup;
   final AppLogLevel logLevel;
 
@@ -112,6 +170,34 @@ class AppSettings {
         : visiblePlaybackOrder.isEmpty
         ? startupPlaybackSection
         : visiblePlaybackOrder.first;
+    final normalizedAiServices = <AiServiceConfig>[];
+    final aiServiceIds = <String>{};
+    for (final service in aiServices) {
+      final id = service.id.trim();
+      final name = service.name.trim();
+      final endpoint = service.endpoint.trim();
+      final model = service.model.trim();
+      if (id.isEmpty ||
+          name.isEmpty ||
+          endpoint.isEmpty ||
+          model.isEmpty ||
+          !aiServiceIds.add(id)) {
+        continue;
+      }
+      normalizedAiServices.add(
+        service.copyWith(id: id, name: name, endpoint: endpoint, model: model),
+      );
+    }
+    final enabledAiServiceIds = {
+      for (final service in normalizedAiServices)
+        if (service.enabled) service.id,
+    };
+    final normalizedActiveAiServiceId =
+        enabledAiServiceIds.contains(activeAiServiceId)
+        ? activeAiServiceId
+        : enabledAiServiceIds.isEmpty
+        ? ''
+        : enabledAiServiceIds.first;
     return copyWith(
       cacheSizeBytes: clampCacheSize(cacheSizeBytes),
       autoPlayDailyRecommendationOnStartup:
@@ -135,7 +221,24 @@ class AppSettings {
         hiddenHomeDiscoveries,
         HomeDiscoverySection.values,
       ),
+      aiRecommendationEnabled:
+          aiRecommendationEnabled && enabledAiServiceIds.isNotEmpty,
+      aiServices: List<AiServiceConfig>.unmodifiable(normalizedAiServices),
+      activeAiServiceId: normalizedActiveAiServiceId,
     );
+  }
+
+  List<AiServiceConfig> get enabledAiServices {
+    return aiServices.where((service) => service.enabled).toList();
+  }
+
+  AiServiceConfig? get activeAiService {
+    for (final service in aiServices) {
+      if (service.id == activeAiServiceId) {
+        return service;
+      }
+    }
+    return null;
   }
 
   bool isHomePlaybackVisible(HomePlaybackSection section) {
@@ -202,6 +305,9 @@ class AppSettings {
     Set<HomeDiscoverySection>? hiddenHomeDiscoveries,
     bool? showMyPlaylistSection,
     bool? showPublicPlaylistSection,
+    bool? aiRecommendationEnabled,
+    List<AiServiceConfig>? aiServices,
+    String? activeAiServiceId,
     bool? checkUpdatesOnStartup,
     AppLogLevel? logLevel,
   }) {
@@ -235,6 +341,10 @@ class AppSettings {
           showMyPlaylistSection ?? this.showMyPlaylistSection,
       showPublicPlaylistSection:
           showPublicPlaylistSection ?? this.showPublicPlaylistSection,
+      aiRecommendationEnabled:
+          aiRecommendationEnabled ?? this.aiRecommendationEnabled,
+      aiServices: aiServices ?? this.aiServices,
+      activeAiServiceId: activeAiServiceId ?? this.activeAiServiceId,
       checkUpdatesOnStartup:
           checkUpdatesOnStartup ?? this.checkUpdatesOnStartup,
       logLevel: logLevel ?? this.logLevel,
@@ -277,6 +387,9 @@ class AppSettings {
       ],
       'showMyPlaylistSection': showMyPlaylistSection,
       'showPublicPlaylistSection': showPublicPlaylistSection,
+      'aiRecommendationEnabled': aiRecommendationEnabled,
+      'aiServices': aiServices.map((service) => service.toJson()).toList(),
+      'activeAiServiceId': activeAiServiceId,
       'checkUpdatesOnStartup': checkUpdatesOnStartup,
       'logLevel': logLevel.name,
     };
@@ -285,6 +398,24 @@ class AppSettings {
   factory AppSettings.fromJson(Map<String, Object?> json) {
     final logoPath = _readString(json, 'logoPath');
     final backgroundPath = _readString(json, 'backgroundPath');
+    final activeAiServiceId = _readString(json, 'activeAiServiceId');
+    var aiServices = _readAiServices(json);
+    final rawAiServices = json['aiServices'];
+    final hasEnabledFlags =
+        rawAiServices is List &&
+        rawAiServices.whereType<Map>().any(
+          (service) => service.containsKey('enabled'),
+        );
+    if (!hasEnabledFlags && aiServices.isNotEmpty) {
+      var enabledServiceId = activeAiServiceId;
+      if (!aiServices.any((service) => service.id == enabledServiceId)) {
+        enabledServiceId = aiServices.first.id;
+      }
+      aiServices = [
+        for (final service in aiServices)
+          service.copyWith(enabled: service.id == enabledServiceId),
+      ];
+    }
     return AppSettings(
       cacheDirectory: _readString(json, 'cacheDirectory'),
       cacheSizeBytes: clampCacheSize(_readInt(json, 'cacheSizeBytes')),
@@ -366,6 +497,13 @@ class AppSettings {
         'showPublicPlaylistSection',
         fallback: true,
       ),
+      aiRecommendationEnabled: _readBool(
+        json,
+        'aiRecommendationEnabled',
+        fallback: false,
+      ),
+      aiServices: aiServices,
+      activeAiServiceId: activeAiServiceId,
       checkUpdatesOnStartup: _readBool(
         json,
         'checkUpdatesOnStartup',
@@ -377,6 +515,17 @@ class AppSettings {
       ),
     ).normalized;
   }
+}
+
+List<AiServiceConfig> _readAiServices(Map<String, Object?> json) {
+  final value = json['aiServices'];
+  if (value is! List) {
+    return const <AiServiceConfig>[];
+  }
+  return [
+    for (final item in value.whereType<Map>())
+      AiServiceConfig.fromJson(Map<String, Object?>.from(item)),
+  ];
 }
 
 int clampCacheSize(int value) {

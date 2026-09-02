@@ -8,6 +8,7 @@ import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'ai_recommendation.dart';
 import 'audio_cache.dart';
 import 'artwork_cache.dart';
 import 'app_update.dart';
@@ -57,11 +58,14 @@ class AppController extends ChangeNotifier {
     ArtworkCacheManager? artworkCacheManager,
     AppUpdateService? updateService,
     PlaylistSyncService? playlistSyncService,
+    AiRecommendationClient? aiRecommendationClient,
   }) : cacheManager = cacheManager ?? AudioCacheManager(),
        artworkCacheManager =
            artworkCacheManager ?? ArtworkCacheManager.instance,
        updateService = updateService ?? AppUpdateService(),
-       playlistSyncService = playlistSyncService ?? PlaylistSyncService() {
+       playlistSyncService = playlistSyncService ?? PlaylistSyncService(),
+       aiRecommendationClient =
+           aiRecommendationClient ?? AiRecommendationClient() {
     player.addListener(_handlePlayerChanged);
     _positionSubscription = player.positionStream.listen(_handlePlayerPosition);
     player.trackResolver = _resolveTrackForPlayback;
@@ -77,6 +81,7 @@ class AppController extends ChangeNotifier {
   final ArtworkCacheManager artworkCacheManager;
   final AppUpdateService updateService;
   final PlaylistSyncService playlistSyncService;
+  final AiRecommendationClient aiRecommendationClient;
   SubsonicApiClient Function(ServerConfig server) apiClientFactory = (server) =>
       SubsonicApiClient(server: server);
 
@@ -410,6 +415,10 @@ class AppController extends ChangeNotifier {
   Future<void> updateSettings(AppSettings value) async {
     final previousSettings = settings;
     settings = value.normalized;
+    final aiRecommendationBehaviorChanged = _aiRecommendationBehaviorChanged(
+      previousSettings,
+      settings,
+    );
     AppLogger.instance.setLevel(settings.logLevel);
     player.setSkipUnplayableTracks(settings.skipUnplayableTracks);
     final shouldReloadHomeOverview = _shouldReloadHomeOverviewForSettings(
@@ -437,11 +446,131 @@ class AppController extends ChangeNotifier {
         _clearCasualListening();
       }
     }
+    if (aiRecommendationBehaviorChanged) {
+      await _invalidateAiRecommendationResults();
+      if (settings.showDailyRecommendation) {
+        unawaited(ensureDailyRecommendation());
+      }
+      if (settings.showCasualListening) {
+        unawaited(ensureCasualListening());
+      }
+    }
     statusMessage = '设置已保存。';
     notifyListeners();
     if (shouldReloadHomeOverview && selectedServer != null) {
       unawaited(loadLibraryOverview());
     }
+  }
+
+  String createAiServiceId() {
+    final timestamp = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final suffix = Random.secure().nextInt(1 << 32).toRadixString(36);
+    return '$timestamp-$suffix';
+  }
+
+  Future<String> loadAiServiceApiKey(String serviceId) async {
+    return await store.loadAiServiceApiKey(serviceId) ?? '';
+  }
+
+  Future<void> saveAiService(AiServiceConfig service, String apiKey) async {
+    final normalized = _validatedAiService(service, apiKey);
+    final previousApiKey = await store.loadAiServiceApiKey(normalized.id);
+    final services = List<AiServiceConfig>.from(settings.aiServices);
+    final index = services.indexWhere((item) => item.id == normalized.id);
+    if (index < 0) {
+      services.add(normalized);
+    } else {
+      services[index] = normalized;
+    }
+    await store.saveAiServiceApiKey(normalized.id, apiKey.trim());
+    final previousSettings = settings;
+    final nextSettings = settings.copyWith(aiServices: services);
+    final behaviorChanged = _aiRecommendationBehaviorChanged(
+      previousSettings,
+      nextSettings.normalized,
+    );
+    await updateSettings(nextSettings);
+    if (!behaviorChanged &&
+        settings.aiRecommendationEnabled &&
+        normalized.enabled &&
+        previousApiKey != apiKey.trim()) {
+      await _invalidateAiRecommendationResults();
+      if (settings.showDailyRecommendation) {
+        unawaited(ensureDailyRecommendation());
+      }
+      if (settings.showCasualListening) {
+        unawaited(ensureCasualListening());
+      }
+    }
+  }
+
+  Future<void> deleteAiService(String serviceId) async {
+    final services = settings.aiServices
+        .where((service) => service.id != serviceId)
+        .toList();
+    await store.deleteAiServiceApiKey(serviceId);
+    await updateSettings(settings.copyWith(aiServices: services));
+  }
+
+  Future<void> setAiRecommendationEnabled(bool enabled) async {
+    final enabledServices = settings.enabledAiServices;
+    if (enabled && enabledServices.isEmpty) {
+      throw const AiRecommendationException('请先启用至少一个 AI 服务。');
+    }
+    if (enabled) {
+      var hasApiKey = false;
+      for (final service in enabledServices) {
+        final apiKey = await store.loadAiServiceApiKey(service.id);
+        if (apiKey != null && apiKey.trim().isNotEmpty) {
+          hasApiKey = true;
+          break;
+        }
+      }
+      if (!hasApiKey) {
+        throw const AiRecommendationException('已启用的 AI 服务均缺少 API Key，请先编辑并保存。');
+      }
+    }
+    await updateSettings(settings.copyWith(aiRecommendationEnabled: enabled));
+  }
+
+  Future<void> testAiService(AiServiceConfig service, String apiKey) async {
+    final normalized = _validatedAiService(service, apiKey);
+    await aiRecommendationClient.testConnection(
+      service: normalized,
+      apiKey: apiKey,
+    );
+  }
+
+  Future<List<String>> fetchAiServiceModels({
+    required String endpoint,
+    required String apiKey,
+  }) {
+    return aiRecommendationClient.fetchModels(
+      endpoint: endpoint,
+      apiKey: apiKey,
+    );
+  }
+
+  AiServiceConfig _validatedAiService(AiServiceConfig service, String apiKey) {
+    final normalized = service.copyWith(
+      id: service.id.trim(),
+      name: service.name.trim(),
+      endpoint: service.endpoint.trim(),
+      model: service.model.trim(),
+    );
+    if (normalized.id.isEmpty ||
+        normalized.name.isEmpty ||
+        normalized.model.isEmpty ||
+        apiKey.trim().isEmpty) {
+      throw const AiRecommendationException('请完整填写服务名称、模型名称和 API Key。');
+    }
+    final uri = Uri.tryParse(normalized.endpoint);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        (uri.scheme != 'https' && uri.scheme != 'http')) {
+      throw const AiRecommendationException('请填写有效的 AI 服务地址。');
+    }
+    return normalized;
   }
 
   Future<void> saveDesktopPlayerVolume(double volume) async {
@@ -1086,6 +1215,83 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<List<Track>?> _rankRecommendationCandidatesWithAi(
+    AiRecommendationPurpose purpose,
+    List<AiRecommendationCandidate> candidates,
+  ) async {
+    if (!settings.aiRecommendationEnabled || candidates.length < 2) {
+      return null;
+    }
+    final services = List<AiServiceConfig>.from(settings.enabledAiServices);
+    if (services.isEmpty) {
+      return null;
+    }
+    final purposeLabel = switch (purpose) {
+      AiRecommendationPurpose.dailyRecommendation => '每日推荐',
+      AiRecommendationPurpose.casualListening => '随便听听',
+    };
+    for (var index = 0; index < services.length; index += 1) {
+      final service = services[index];
+      if (!_isAiServiceStillEnabled(service)) {
+        return null;
+      }
+      final hasNext = index < services.length - 1;
+      final stopwatch = Stopwatch()..start();
+      try {
+        final apiKey = await store.loadAiServiceApiKey(service.id);
+        if (!_isAiServiceStillEnabled(service)) {
+          return null;
+        }
+        if (apiKey == null || apiKey.trim().isEmpty) {
+          throw const AiRecommendationException('缺少 API Key。');
+        }
+        final tracks = await aiRecommendationClient.rankTracks(
+          service: service,
+          apiKey: apiKey,
+          purpose: purpose,
+          candidates: candidates,
+        );
+        if (!_isAiServiceStillEnabled(service)) {
+          return null;
+        }
+        AppLogger.instance.info(
+          'ai-recommendation',
+          '$purposeLabel AI 排序完成：服务 ${service.name}，'
+              '候选 ${candidates.length} 首，'
+              '耗时 ${stopwatch.elapsedMilliseconds} 毫秒',
+        );
+        return tracks;
+      } on AiRecommendationException catch (error) {
+        AppLogger.instance.warning(
+          'ai-recommendation',
+          '$purposeLabel AI 服务 ${service.name} 失败，'
+              '${hasNext ? '正在尝试下一个服务' : '已使用本地推荐'}：'
+              '${error.message}',
+        );
+      } catch (_) {
+        AppLogger.instance.warning(
+          'ai-recommendation',
+          '$purposeLabel AI 服务 ${service.name} 异常，'
+              '${hasNext ? '正在尝试下一个服务' : '已使用本地推荐'}',
+        );
+      }
+    }
+    return null;
+  }
+
+  bool _isAiServiceStillEnabled(AiServiceConfig expected) {
+    if (!settings.aiRecommendationEnabled) {
+      return false;
+    }
+    return settings.enabledAiServices.any(
+      (service) =>
+          service.id == expected.id &&
+          service.name == expected.name &&
+          service.endpoint == expected.endpoint &&
+          service.model == expected.model,
+    );
+  }
+
   Future<void> _loadCasualListeningForServer(
     ServerConfig server,
     SubsonicApiClient client, {
@@ -1119,13 +1325,39 @@ class AppController extends ChangeNotifier {
         ),
       )).expand((tracks) => tracks).toList();
       final randomTracks = await randomTracksFuture;
-      final tracks = buildCasualListeningTracks(
+      final localTracks = buildCasualListeningTracks(
         candidates: randomTracks,
         habitTracks: habitTracks,
         habitAlbums: habitAlbums,
         excludedTracks: player.queue,
         seed: seed,
       );
+      List<Track>? aiTracks;
+      if (settings.aiRecommendationEnabled) {
+        final aiCandidates = buildCasualListeningTracks(
+          candidates: randomTracks,
+          habitTracks: habitTracks,
+          habitAlbums: habitAlbums,
+          excludedTracks: player.queue,
+          seed: seed,
+          count: _aiRecommendationCandidateCount,
+        );
+        aiTracks = await _rankRecommendationCandidatesWithAi(
+          AiRecommendationPurpose.casualListening,
+          [
+            for (final track in aiCandidates)
+              AiRecommendationCandidate(
+                track: track,
+                sources: const {'local_casual_priority'},
+              ),
+          ],
+        );
+      }
+      final tracks = aiTracks == null
+          ? localTracks
+          : _avoidAdjacentRecommendationArtists(
+              aiTracks.take(_casualListeningCount).toList(),
+            );
       if (requestId != _casualListeningRequestId ||
           !_isCurrentServer(server) ||
           !settings.showCasualListening) {
@@ -1211,7 +1443,22 @@ class AppController extends ChangeNotifier {
         habitSearches,
       )).expand((tracks) => tracks).toList();
       final randomTracks = await randomTracksFuture;
+      final aiRankedTracks = settings.aiRecommendationEnabled
+          ? await _rankRecommendationCandidatesWithAi(
+              AiRecommendationPurpose.dailyRecommendation,
+              _buildAiRecommendationCandidates({
+                'direct_favorite': favoriteTracks,
+                'favorite_artist': relatedTracks,
+                'listening_habit': habitualTracks,
+                'random_exploration': randomTracks,
+              }, seed: seed),
+            )
+          : null;
       final generatedAt = DateTime.now();
+      final aiPriorityByTrackKey = <String, int>{
+        for (final entry in (aiRankedTracks ?? const <Track>[]).indexed)
+          _recommendationTrackKey(entry.$2): entry.$1,
+      };
       final tracks = buildDailyRecommendationTracks(
         favorites: favoriteTracks,
         related: relatedTracks,
@@ -1221,6 +1468,7 @@ class AppController extends ChangeNotifier {
         seed: seed,
         history: _recommendationHistory,
         generatedAt: generatedAt,
+        priorityByTrackKey: aiPriorityByTrackKey,
       );
 
       if (requestId != _recommendationRequestId ||
@@ -1327,6 +1575,28 @@ class AppController extends ChangeNotifier {
     _recommendationHistory = [];
     isLoadingRecommendations = false;
     await store.clearDailyRecommendation();
+    notifyListeners();
+  }
+
+  Future<void> _invalidateAiRecommendationResults() async {
+    _recommendationRequestId++;
+    recommendedTracks = [];
+    _recommendedDateKey = null;
+    isLoadingRecommendations = false;
+    _casualListeningRequestId++;
+    casualListeningTracks = [];
+    isLoadingCasualListening = false;
+    if (_recommendationHistory.isEmpty) {
+      await store.clearDailyRecommendation();
+    } else {
+      await store.saveDailyRecommendation(
+        DailyRecommendationCache(
+          dateKey: '',
+          tracks: const [],
+          history: _recommendationHistory,
+        ),
+      );
+    }
     notifyListeners();
   }
 
@@ -2864,9 +3134,38 @@ class AppController extends ChangeNotifier {
     player.onPlaybackSessionChanged = null;
     player.removeListener(_handlePlayerChanged);
     _positionSubscription.cancel();
+    aiRecommendationClient.dispose();
     player.dispose();
     super.dispose();
   }
+}
+
+bool _aiRecommendationBehaviorChanged(
+  AppSettings previous,
+  AppSettings current,
+) {
+  if (previous.aiRecommendationEnabled != current.aiRecommendationEnabled) {
+    return true;
+  }
+  if (!current.aiRecommendationEnabled) {
+    return false;
+  }
+  final previousServices = previous.enabledAiServices;
+  final currentServices = current.enabledAiServices;
+  if (previousServices.length != currentServices.length) {
+    return true;
+  }
+  for (var index = 0; index < previousServices.length; index += 1) {
+    final previousService = previousServices[index];
+    final currentService = currentServices[index];
+    if (previousService.id != currentService.id ||
+        previousService.name != currentService.name ||
+        previousService.endpoint != currentService.endpoint ||
+        previousService.model != currentService.model) {
+      return true;
+    }
+  }
+  return false;
 }
 
 const int _dailyRecommendationCount = 30;
@@ -2876,6 +3175,7 @@ const int _recommendationFavoriteCooldownDays = 5;
 const int _sequentialCompletionRandomQueueSize = 30;
 const int _casualListeningCount = 30;
 const int _casualListeningCandidateCount = 300;
+const int _aiRecommendationCandidateCount = 80;
 const int _libraryShuffleBatchSize = 10;
 const int _libraryShuffleCandidateCount = 30;
 const int _libraryShuffleRefillRemainingCount = 3;
@@ -2976,6 +3276,7 @@ List<Track> buildCasualListeningTracks({
   required Iterable<LibrarySectionItem> habitAlbums,
   required Iterable<Track> excludedTracks,
   required int seed,
+  int count = _casualListeningCount,
 }) {
   final excludedKeys = excludedTracks.map(_recommendationTrackKey).toSet();
   final bestByKey = _bestRecommendationTracksByKey(candidates);
@@ -3041,9 +3342,7 @@ List<Track> buildCasualListeningTracks({
     );
   });
 
-  return _avoidAdjacentRecommendationArtists(
-    tracks.take(_casualListeningCount).toList(),
-  );
+  return _avoidAdjacentRecommendationArtists(tracks.take(count).toList());
 }
 
 List<Track> buildDailyRecommendationTracks({
@@ -3055,6 +3354,7 @@ List<Track> buildDailyRecommendationTracks({
   required int seed,
   Iterable<DailyRecommendationHistoryEntry> history = const [],
   DateTime? generatedAt,
+  Map<String, int> priorityByTrackKey = const {},
 }) {
   final bestByKey = _bestRecommendationTracksByKey([
     ...favorites,
@@ -3115,7 +3415,24 @@ List<Track> buildDailyRecommendationTracks({
     final candidates = source.where((track) {
       final key = _recommendationTrackKey(track);
       return !usedKeys.contains(key) && !blockedKeyCounts.containsKey(key);
-    }).toList()..shuffle(random);
+    }).toList();
+    if (priorityByTrackKey.isEmpty) {
+      candidates.shuffle(random);
+    } else {
+      final tieBreakers = <String, int>{
+        for (final track in candidates)
+          _recommendationTrackKey(track): random.nextInt(1 << 31),
+      };
+      candidates.sort((left, right) {
+        final leftKey = _recommendationTrackKey(left);
+        final rightKey = _recommendationTrackKey(right);
+        final priorityComparison = (priorityByTrackKey[leftKey] ?? 1 << 30)
+            .compareTo(priorityByTrackKey[rightKey] ?? 1 << 30);
+        return priorityComparison != 0
+            ? priorityComparison
+            : tieBreakers[leftKey]!.compareTo(tieBreakers[rightKey]!);
+      });
+    }
     var added = 0;
     for (final track in candidates) {
       if (!usedKeys.add(_recommendationTrackKey(track))) {
@@ -3166,6 +3483,62 @@ List<Track> buildDailyRecommendationTracks({
   return _avoidAdjacentRecommendationArtists(
     selected.take(_dailyRecommendationCount).toList(),
   );
+}
+
+List<AiRecommendationCandidate> _buildAiRecommendationCandidates(
+  Map<String, List<Track>> sourcePools, {
+  required int seed,
+}) {
+  final allTracks = sourcePools.values.expand((tracks) => tracks).toList();
+  final bestByKey = _bestRecommendationTracksByKey(allTracks);
+  final random = Random(seed ^ 0x6a09e667);
+  final randomizedPools = {
+    for (final entry in sourcePools.entries)
+      entry.key: List<Track>.of(entry.value)..shuffle(random),
+  };
+  final sourcesByKey = <String, Set<String>>{};
+  for (final entry in sourcePools.entries) {
+    for (final track in entry.value) {
+      sourcesByKey
+          .putIfAbsent(_recommendationTrackKey(track), () => <String>{})
+          .add(entry.key);
+    }
+  }
+  final indexes = <String, int>{for (final key in randomizedPools.keys) key: 0};
+  final selectedKeys = <String>{};
+  final candidates = <AiRecommendationCandidate>[];
+  while (candidates.length < _aiRecommendationCandidateCount) {
+    var addedInRound = false;
+    for (final entry in randomizedPools.entries) {
+      var index = indexes[entry.key]!;
+      while (index < entry.value.length) {
+        final key = _recommendationTrackKey(entry.value[index]);
+        index += 1;
+        indexes[entry.key] = index;
+        if (!selectedKeys.add(key)) {
+          continue;
+        }
+        final track = bestByKey[key];
+        if (track != null) {
+          candidates.add(
+            AiRecommendationCandidate(
+              track: track,
+              sources: Set<String>.unmodifiable(sourcesByKey[key]!),
+            ),
+          );
+          addedInRound = true;
+        }
+        break;
+      }
+      if (candidates.length >= _aiRecommendationCandidateCount) {
+        break;
+      }
+    }
+    if (!addedInRound) {
+      break;
+    }
+  }
+  return candidates;
 }
 
 Map<String, Track> _bestRecommendationTracksByKey(Iterable<Track> tracks) {
