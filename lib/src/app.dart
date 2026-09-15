@@ -4349,7 +4349,7 @@ String _homePlaybackLabel(HomePlaybackSection section) {
   return switch (section) {
     HomePlaybackSection.dailyRecommendation => '每日推荐',
     HomePlaybackSection.casualListening => '随便听听',
-    HomePlaybackSection.libraryShuffle => '曲库随机',
+    HomePlaybackSection.libraryShuffle => '音乐漫游',
   };
 }
 
@@ -6224,7 +6224,8 @@ class _MusicFunctionGrid extends StatelessWidget {
       ),
       HomePlaybackSection.libraryShuffle: _MusicFunctionEntry(
         icon: Icons.casino_outlined,
-        label: '曲库随机',
+        imageAsset: 'assets/branding/music_roaming.png',
+        label: '音乐漫游',
         subtitle: controller.isLoadingLibraryShuffle ? '准备中' : '连续随机播放',
         onTap: () => unawaited(onStartLibraryShuffle()),
         onPlay: controller.isLoadingLibraryShuffle
@@ -6286,10 +6287,12 @@ class _MusicFunctionEntry {
     required this.onTap,
     this.onPlay,
     this.onRefresh,
+    this.imageAsset,
     this.isRefreshing = false,
   });
 
   final IconData icon;
+  final String? imageAsset;
   final String label;
   final String subtitle;
   final VoidCallback onTap;
@@ -6326,11 +6329,20 @@ class _MusicFunctionTileState extends State<_MusicFunctionTile> {
             padding: EdgeInsets.all(compact ? 6 : 14),
             child: Row(
               children: [
-                Icon(
-                  entry.icon,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: compact ? 22 : 30,
-                ),
+                entry.imageAsset == null
+                    ? Icon(
+                        entry.icon,
+                        color: Theme.of(context).colorScheme.primary,
+                        size: compact ? 22 : 30,
+                      )
+                    : ClipOval(
+                        child: Image.asset(
+                          entry.imageAsset!,
+                          width: compact ? 22 : 30,
+                          height: compact ? 22 : 30,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
                 SizedBox(width: compact ? 7 : 12),
                 Expanded(
                   child: Column(
@@ -6801,6 +6813,7 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
   Timer? _suggestionDebounceTimer;
   Timer? _focusLossTimer;
   int _suggestionRequestId = 0;
+  bool _restoringInputConnection = false;
   List<_RemoteSearchSuggestion> _suggestions = const [];
   String? _suggestionMessage;
 
@@ -6936,6 +6949,21 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
   void _submitSearch() {
     _cancelSuggestionRequest();
     widget.onSearch();
+  }
+
+  void _restoreInputConnectionAfterTap() {
+    if (!mounted || !_focusNode.hasFocus || _restoringInputConnection) {
+      return;
+    }
+    _restoringInputConnection = true;
+    _focusNode.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _focusNode.requestFocus();
+      _restoringInputConnection = false;
+    });
   }
 
   double _searchLeadingWidth() {
@@ -7099,6 +7127,8 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
                     return TextField(
                       controller: widget.controller,
                       focusNode: _focusNode,
+                      onTap: _restoreInputConnectionAfterTap,
+                      onTapAlwaysCalled: true,
                       textAlign: TextAlign.start,
                       textAlignVertical: TextAlignVertical.center,
                       textInputAction: TextInputAction.search,
@@ -9206,7 +9236,12 @@ class _NowPlayingInfo extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            _RecordArtwork(track: track, size: size),
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: _RecordArtwork(track: track, size: size),
+              ),
+            ),
             const SizedBox(height: 28),
             Text(
               track.title,
@@ -9273,9 +9308,8 @@ class _NowPlayingMetadataLink extends StatelessWidget {
           constraints: const BoxConstraints(minHeight: 32),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
-            child: Align(
-              widthFactor: 1,
-              heightFactor: 1,
+            child: SizedBox(
+              width: double.infinity,
               child: Text(
                 label,
                 maxLines: 1,

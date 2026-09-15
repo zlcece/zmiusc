@@ -167,8 +167,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.1.3',
-    buildNumber: '31',
+    version: '1.1.4',
+    buildNumber: '32',
     buildSignature: '',
   );
 
@@ -4304,8 +4304,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.1.3',
-        buildNumber: '31',
+        version: '1.1.4',
+        buildNumber: '32',
         buildSignature: '',
       );
     });
@@ -4454,10 +4454,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.4',
-                  'versionCode': 32,
+                  'latestVersion': '1.1.5',
+                  'versionCode': 33,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.1.4/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.1.5/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4485,7 +4485,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.1.4'), findsOneWidget);
+    expect(find.text('发现新版本 1.1.5'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4497,7 +4497,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.1.4/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.1.5/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4522,11 +4522,11 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.4',
-                  'versionCode': 32,
+                  'latestVersion': '1.1.5',
+                  'versionCode': 33,
                   'downloadUrl': downloadUri.toString(),
                   'githubDownloadUrl':
-                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.4/zmusic-windows-x64.exe',
+                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.5/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4562,8 +4562,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.1.4'));
-    expect(find.text('当前版本：1.1.3'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.1.5'));
+    expect(find.text('当前版本：1.1.4'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('稍后更新'), findsOneWidget);
@@ -5091,6 +5091,18 @@ plain text
     expect(find.byKey(const ValueKey('music-function-我的歌单')), findsOneWidget);
     expect(find.byKey(const ValueKey('music-function-电台')), findsOneWidget);
     expect(find.byTooltip('刷新我喜欢的'), findsOneWidget);
+    final roaming = find.byKey(const ValueKey('music-function-音乐漫游'));
+    expect(roaming, findsOneWidget);
+    expect(find.text('曲库随机'), findsNothing);
+    expect(find.byTooltip('播放音乐漫游'), findsOneWidget);
+    expect(
+      tester
+          .widget<Image>(
+            find.descendant(of: roaming, matching: find.byType(Image)),
+          )
+          .image,
+      const AssetImage('assets/branding/music_roaming.png'),
+    );
     expect(find.byTooltip('刷新我的歌单'), findsOneWidget);
     expect(find.byTooltip('刷新公开歌单'), findsOneWidget);
     expect(find.byTooltip('刷新电台'), findsOneWidget);
@@ -7433,7 +7445,7 @@ plain text
   testWidgets('now playing artist and album links open scoped search results', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(1264, 720);
+    tester.view.physicalSize = const Size(1072, 641);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -7482,6 +7494,11 @@ plain text
 
     final albumLink = find.byKey(const ValueKey('now-playing-album-link'));
     final artistLink = find.byKey(const ValueKey('now-playing-artist-link'));
+    expect(albumLink.hitTestable(), findsOneWidget);
+    expect(artistLink.hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    expect(tester.getSize(albumLink).width, greaterThan(120));
+    expect(tester.getSize(artistLink).width, greaterThan(120));
     expect(
       (tester.getCenter(albumLink).dy - tester.getCenter(artistLink).dy).abs(),
       lessThanOrEqualTo(1),

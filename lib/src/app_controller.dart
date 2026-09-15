@@ -799,7 +799,7 @@ class AppController extends ChangeNotifier {
         await playTrackList(List<Track>.of(casualListeningTracks), 0);
         return;
       case HomePlaybackSection.libraryShuffle:
-        AppLogger.instance.info('recommendation', '启动加载完成，自动播放曲库随机');
+        AppLogger.instance.info('recommendation', '启动加载完成，自动播放音乐漫游');
         await startLibraryShuffle();
         return;
     }
@@ -2267,13 +2267,13 @@ class AppController extends ChangeNotifier {
         ..clear()
         ..addAll(tracks.map(_recommendationTrackKey));
       await player.playForwardOnlyTracks(tracks, 0);
-      statusMessage = '已开始曲库随机。';
-      AppLogger.instance.info('player', '曲库随机已开始，隐藏队列共 ${tracks.length} 首');
+      statusMessage = '已开始音乐漫游。';
+      AppLogger.instance.info('player', '音乐漫游已开始，隐藏队列共 ${tracks.length} 首');
     } catch (error, stackTrace) {
-      statusMessage = '启动曲库随机失败，请稍后重试。';
+      statusMessage = '启动音乐漫游失败，请稍后重试。';
       AppLogger.instance.error(
         'player',
-        '启动曲库随机失败',
+        '启动音乐漫游失败',
         error: error,
         stackTrace: stackTrace,
       );
@@ -2322,11 +2322,11 @@ class AppController extends ChangeNotifier {
       }
       _libraryShuffleTrackKeys.addAll(tracks.map(_recommendationTrackKey));
       player.appendTracks(tracks);
-      AppLogger.instance.debug('player', '曲库随机已追加 ${tracks.length} 首隐藏队列歌曲');
+      AppLogger.instance.debug('player', '音乐漫游已追加 ${tracks.length} 首隐藏队列歌曲');
     } catch (error, stackTrace) {
       AppLogger.instance.warning(
         'player',
-        '曲库随机追加歌曲失败',
+        '音乐漫游追加歌曲失败',
         error: error,
         stackTrace: stackTrace,
       );
@@ -2389,7 +2389,7 @@ class AppController extends ChangeNotifier {
       } catch (error, stackTrace) {
         AppLogger.instance.warning(
           'player',
-          '曲库随机队列结束时加载下一批失败',
+          '音乐漫游队列结束时加载下一批失败',
           error: error,
           stackTrace: stackTrace,
         );
