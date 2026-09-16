@@ -330,6 +330,14 @@ class _PlaylistMergePageState extends State<PlaylistMergePage> {
   @override
   Widget build(BuildContext context) {
     final targetIds = _targetTracks.map(_trackKey).toSet();
+    final selectableSourceTracks = _sourceTracks.where(
+      (track) => !targetIds.contains(_trackKey(track)),
+    );
+    final allSourceTracksSelected =
+        selectableSourceTracks.isNotEmpty &&
+        selectableSourceTracks.every(
+          (track) => _selectedTracks.containsKey(_trackKey(track)),
+        );
     final sourcePane = _PlaylistTracksPane(
       key: const ValueKey('playlist-merge-source-pane'),
       title: '来源歌单',
@@ -350,6 +358,19 @@ class _PlaylistMergePageState extends State<PlaylistMergePage> {
       tracks: _sourceTracks,
       loading: _loadingSource,
       emptyText: '来源歌单暂无歌曲',
+      headerAction: TextButton.icon(
+        key: const ValueKey('playlist-merge-select-all'),
+        onPressed:
+            _loadingSource || _loadingTarget || _moving || _sourceTracks.isEmpty
+            ? null
+            : () => _toggleSelectAllSource(targetIds),
+        icon: Icon(
+          allSourceTracksSelected
+              ? Icons.deselect_rounded
+              : Icons.select_all_rounded,
+        ),
+        label: Text(allSourceTracksSelected ? '取消全选' : '全选'),
+      ),
       selectedTracks: _selectedTracks,
       disabledTrackIds: targetIds,
       onTrackChanged: _toggleSourceTrack,
@@ -459,6 +480,25 @@ class _PlaylistMergePageState extends State<PlaylistMergePage> {
         _selectedTracks[key] = track;
       } else {
         _selectedTracks.remove(key);
+      }
+    });
+  }
+
+  void _toggleSelectAllSource(Set<String> targetIds) {
+    final selectableTracks = _sourceTracks.where(
+      (track) => !targetIds.contains(_trackKey(track)),
+    );
+    final selectAll = selectableTracks.any(
+      (track) => !_selectedTracks.containsKey(_trackKey(track)),
+    );
+    setState(() {
+      for (final track in selectableTracks) {
+        final key = _trackKey(track);
+        if (selectAll) {
+          _selectedTracks[key] = track;
+        } else {
+          _selectedTracks.remove(key);
+        }
       }
     });
   }
@@ -1212,6 +1252,7 @@ class _PlaylistTracksPane extends StatelessWidget {
     required this.tracks,
     required this.loading,
     required this.emptyText,
+    this.headerAction,
     this.selectedTracks,
     this.disabledTrackIds = const {},
     this.onTrackChanged,
@@ -1224,6 +1265,7 @@ class _PlaylistTracksPane extends StatelessWidget {
   final List<Track> tracks;
   final bool loading;
   final String emptyText;
+  final Widget? headerAction;
   final Map<String, Track>? selectedTracks;
   final Set<String> disabledTrackIds;
   final void Function(Track track, bool selected)? onTrackChanged;
@@ -1246,6 +1288,10 @@ class _PlaylistTracksPane extends StatelessWidget {
                   ),
                 ),
               ),
+              if (headerAction != null) ...[
+                headerAction!,
+                const SizedBox(width: 4),
+              ],
               Text('${tracks.length} 首'),
             ],
           ),

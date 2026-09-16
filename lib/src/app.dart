@@ -27,7 +27,23 @@ const String _appName = 'Zmusic';
 const double _defaultPlayerVolume = 0.55;
 const double _mobilePlayerVolume = 1;
 const MethodChannel _androidTaskChannel = MethodChannel('com.zmusic.app/task');
+const MethodChannel _windowsImeChannel = MethodChannel(
+  'com.zmusic.app/windows_ime',
+);
 final Expando<bool> _appUpdateDialogVisibility = Expando<bool>();
+
+Future<void> _setWindowsImeEnabled(bool enabled) async {
+  if (defaultTargetPlatform != TargetPlatform.windows) {
+    return;
+  }
+  try {
+    await _windowsImeChannel.invokeMethod<void>('setImeEnabled', enabled);
+  } on MissingPluginException {
+    // Older Windows runners do not expose the recovery channel.
+  } on PlatformException {
+    // Text input remains usable if native recovery is unavailable.
+  }
+}
 
 class ZmusicApp extends StatefulWidget {
   const ZmusicApp({
@@ -1257,7 +1273,12 @@ class _HomePageState extends State<HomePage> {
         platformKey,
       );
       if (!mounted ||
-          !isNewerAppVersion(update.latestVersion, packageInfo.version)) {
+          !isNewerAppRelease(
+            latestVersion: update.latestVersion,
+            latestBuildNumber: update.versionCode,
+            currentVersion: packageInfo.version,
+            currentBuildNumber: int.tryParse(packageInfo.buildNumber) ?? 0,
+          )) {
         return;
       }
       await _showAppUpdateDialog(
@@ -2899,7 +2920,12 @@ class _SettingsPageState extends State<_SettingsPage> {
       if (!mounted) {
         return;
       }
-      if (!isNewerAppVersion(update.latestVersion, packageInfo.version)) {
+      if (!isNewerAppRelease(
+        latestVersion: update.latestVersion,
+        latestBuildNumber: update.versionCode,
+        currentVersion: packageInfo.version,
+        currentBuildNumber: int.tryParse(packageInfo.buildNumber) ?? 0,
+      )) {
         _showSourceMessage(context, '当前已是最新版本。');
         return;
       }
@@ -6835,6 +6861,7 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
   void dispose() {
     _cancelSuggestionRequest();
     _focusLossTimer?.cancel();
+    unawaited(_setWindowsImeEnabled(false));
     _focusNode.removeListener(_handleFocusChanged);
     _focusNode.dispose();
     super.dispose();
@@ -6843,9 +6870,11 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
   void _handleFocusChanged() {
     _focusLossTimer?.cancel();
     if (_focusNode.hasFocus) {
+      unawaited(_setWindowsImeEnabled(true));
       setState(() {});
       return;
     }
+    unawaited(_setWindowsImeEnabled(false));
     _focusLossTimer = Timer(const Duration(milliseconds: 120), () {
       if (!mounted || _focusNode.hasFocus) {
         return;

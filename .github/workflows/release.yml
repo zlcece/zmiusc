@@ -263,7 +263,7 @@ jobs:
           APP_PATH='build/ios/iphoneos/Runner.app'
           test -d "$APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.1.4'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '32'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '33'
           mkdir -p dist/ios/Payload
           cp -R "$APP_PATH" dist/ios/Payload/
           rm -rf dist/ios/Payload/Runner.app/_CodeSignature
@@ -299,7 +299,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Zmusic 1.1.4
-          body: Zmusic 1.1.4+32 five-platform release. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
+          body: Zmusic 1.1.4+33 five-platform release. This rebuild includes the Windows IME recovery fix. The iOS IPA is unsigned and requires self-signing. The macOS package is ad-hoc signed and not notarized.
           fail_on_unmatched_files: true
           files: |
             release/zmusic-windows-x64.exe

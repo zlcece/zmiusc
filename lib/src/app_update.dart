@@ -356,6 +356,21 @@ Future<void> openAndroidUpdateInstaller(File updateFile) async {
 }
 
 bool isNewerAppVersion(String latestVersion, String currentVersion) {
+  return _compareAppVersions(latestVersion, currentVersion) > 0;
+}
+
+bool isNewerAppRelease({
+  required String latestVersion,
+  required int latestBuildNumber,
+  required String currentVersion,
+  required int currentBuildNumber,
+}) {
+  final versionComparison = _compareAppVersions(latestVersion, currentVersion);
+  return versionComparison > 0 ||
+      (versionComparison == 0 && latestBuildNumber > currentBuildNumber);
+}
+
+int _compareAppVersions(String latestVersion, String currentVersion) {
   final latest = _numericVersionParts(latestVersion);
   final current = _numericVersionParts(currentVersion);
   final length = latest.length > current.length
@@ -365,10 +380,10 @@ bool isNewerAppVersion(String latestVersion, String currentVersion) {
     final latestPart = index < latest.length ? latest[index] : 0;
     final currentPart = index < current.length ? current[index] : 0;
     if (latestPart != currentPart) {
-      return latestPart > currentPart;
+      return latestPart > currentPart ? 1 : -1;
     }
   }
-  return false;
+  return 0;
 }
 
 Map<String, dynamic> _decodeManifest(String source) {

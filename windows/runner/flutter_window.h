@@ -44,6 +44,8 @@ class FlutterWindow : public Win32Window {
       file_drop_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       windows_settings_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      windows_ime_channel_;
   std::unique_ptr<SystemMediaControls> system_media_controls_;
 
   void SendSystemMediaCommand(WPARAM command);

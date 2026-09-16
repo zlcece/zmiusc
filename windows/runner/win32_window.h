@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 // A class abstraction for a high DPI-aware Win32 Window. Intended to be
@@ -56,6 +57,10 @@ class Win32Window {
   RECT GetClientArea();
 
  protected:
+  // Enables or disables the native IME context used by the active Flutter
+  // text input client.
+  void SetImeEnabled(bool enabled);
+
   // Processes and route salient window messages for mouse handling,
   // size change and DPI. Delegates handling of these to member overloads that
   // inheriting classes can handle.
@@ -97,6 +102,22 @@ class Win32Window {
 
   // window handle for hosted content.
   HWND child_content_ = nullptr;
+
+  // Flutter's Windows engine can retain a stale IMM32-to-TSF session after a
+  // long focus loss. Keep a separately owned context for each active text
+  // input session so it is discarded before the next session starts.
+  bool ime_requested_ = false;
+  bool ime_context_active_ = false;
+  std::optional<bool> ime_open_status_;
+  std::optional<DWORD> ime_conversion_mode_;
+  std::optional<DWORD> ime_sentence_mode_;
+  HWND owned_ime_window_ = nullptr;
+  HIMC owned_ime_context_ = nullptr;
+  HIMC replaced_ime_context_ = nullptr;
+
+  void SetImeContextActive(bool enabled);
+  bool DestroyOwnedImeContext();
+  bool CreateAndAssociateImeContext();
 };
 
 #endif  // RUNNER_WIN32_WINDOW_H_

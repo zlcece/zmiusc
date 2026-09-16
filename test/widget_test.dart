@@ -552,6 +552,45 @@ void main() {
     expect(isNewerAppVersion('1.0.8', '1.0.9'), isFalse);
   });
 
+  test('compares update releases using build codes for the same version', () {
+    expect(
+      isNewerAppRelease(
+        latestVersion: '1.1.4',
+        latestBuildNumber: 33,
+        currentVersion: '1.1.4',
+        currentBuildNumber: 32,
+      ),
+      isTrue,
+    );
+    expect(
+      isNewerAppRelease(
+        latestVersion: '1.1.4',
+        latestBuildNumber: 32,
+        currentVersion: '1.1.4',
+        currentBuildNumber: 32,
+      ),
+      isFalse,
+    );
+    expect(
+      isNewerAppRelease(
+        latestVersion: '1.1.4',
+        latestBuildNumber: 31,
+        currentVersion: '1.1.4',
+        currentBuildNumber: 32,
+      ),
+      isFalse,
+    );
+    expect(
+      isNewerAppRelease(
+        latestVersion: '1.1.5',
+        latestBuildNumber: 1,
+        currentVersion: '1.1.4',
+        currentBuildNumber: 99,
+      ),
+      isTrue,
+    );
+  });
+
   test('loads categorized subsonic search results', () async {
     const server = ServerConfig(
       id: 'https://music.example.com',
@@ -5361,6 +5400,27 @@ plain text
     );
     expect(find.text('选择来源歌单'), findsNothing);
     expect(find.text('选择目标歌单'), findsNothing);
+    final selectAll = find.byKey(const ValueKey('playlist-merge-select-all'));
+    expect(selectAll, findsOneWidget);
+    await tester.tap(selectAll);
+    await tester.pump();
+    final sourceSong = find.byKey(
+      const ValueKey(
+        'playlist-tool-track-https://music.example.com|demo:song-1',
+      ),
+    );
+    final duplicateSong = find.byKey(
+      const ValueKey(
+        'playlist-tool-track-https://music.example.com|demo:song-2',
+      ),
+    );
+    expect(tester.widget<CheckboxListTile>(sourceSong).value, isTrue);
+    expect(tester.widget<CheckboxListTile>(sourceSong).onChanged, isNotNull);
+    expect(tester.widget<CheckboxListTile>(duplicateSong).value, isTrue);
+    expect(tester.widget<CheckboxListTile>(duplicateSong).onChanged, isNull);
+    await tester.tap(selectAll);
+    await tester.pump();
+    expect(tester.widget<CheckboxListTile>(sourceSong).value, isFalse);
     await tester.tap(find.byKey(const ValueKey('playlist-transfer-swap')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('选择来源歌单:target')), findsOneWidget);

@@ -138,6 +138,27 @@ bool FlutterWindow::OnCreate() {
         }
         result->Success();
       });
+  windows_ime_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(),
+          "com.zmusic.app/windows_ime",
+          &flutter::StandardMethodCodec::GetInstance());
+  windows_ime_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() != "setImeEnabled") {
+          result->NotImplemented();
+          return;
+        }
+        const bool* enabled = std::get_if<bool>(call.arguments());
+        if (enabled == nullptr) {
+          result->Error("invalid-arguments", "Expected a boolean value.");
+          return;
+        }
+        SetImeEnabled(*enabled);
+        result->Success();
+      });
   DragAcceptFiles(GetHandle(), TRUE);
   system_media_controls_ = std::make_unique<SystemMediaControls>();
   system_media_controls_->Initialize(GetHandle());
@@ -214,6 +235,7 @@ void FlutterWindow::OnDestroy() {
   DragAcceptFiles(GetHandle(), FALSE);
   file_drop_channel_.reset();
   windows_settings_channel_.reset();
+  windows_ime_channel_.reset();
   media_channel_.reset();
   system_media_controls_.reset();
   if (flutter_controller_) {

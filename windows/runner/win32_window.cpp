@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <imm.h>
 
 #include "resource.h"
 
@@ -222,8 +223,15 @@ Win32Window::MessageHandler(HWND hwnd,
     }
 
     case WM_ACTIVATE:
-      if (LOWORD(wparam) != WA_INACTIVE && child_content_ != nullptr) {
+      if (LOWORD(wparam) == WA_INACTIVE) {
+        if (ime_requested_) {
+          SetImeContextActive(false);
+        }
+      } else if (child_content_ != nullptr) {
         SetFocus(child_content_);
+        if (ime_requested_) {
+          SetImeContextActive(true);
+        }
       }
       return 0;
 
@@ -237,6 +245,8 @@ Win32Window::MessageHandler(HWND hwnd,
 
 void Win32Window::Destroy() {
   OnDestroy();
+
+  SetImeEnabled(false);
 
   if (window_handle_) {
     DestroyWindow(window_handle_);
@@ -253,6 +263,9 @@ Win32Window* Win32Window::GetThisFromHandle(HWND const window) noexcept {
 }
 
 void Win32Window::SetChildContent(HWND content) {
+  if (child_content_ != nullptr && child_content_ != content) {
+    SetImeEnabled(false);
+  }
   child_content_ = content;
   SetParent(content, window_handle_);
   RECT frame = GetClientArea();
@@ -261,6 +274,130 @@ void Win32Window::SetChildContent(HWND content) {
              frame.bottom - frame.top, true);
 
   SetFocus(child_content_);
+}
+
+void Win32Window::SetImeEnabled(bool enabled) {
+  ime_requested_ = enabled;
+  SetImeContextActive(enabled);
+}
+
+void Win32Window::SetImeContextActive(bool enabled) {
+  if (child_content_ == nullptr || !::IsWindow(child_content_)) {
+    DestroyOwnedImeContext();
+    ime_context_active_ = false;
+    return;
+  }
+
+  if (enabled && ime_context_active_ && owned_ime_context_ != nullptr) {
+    HIMC current_context = ::ImmGetContext(child_content_);
+    if (current_context == owned_ime_context_) {
+      ::ImmReleaseContext(child_content_, current_context);
+      return;
+    }
+    if (current_context != nullptr) {
+      ::ImmReleaseContext(child_content_, current_context);
+    }
+    ime_context_active_ = false;
+  }
+
+  if (!enabled) {
+    DestroyOwnedImeContext();
+    ::ImmAssociateContextEx(child_content_, nullptr, 0);
+    ime_context_active_ = false;
+    return;
+  }
+
+  HIMC previous_context = ::ImmGetContext(child_content_);
+  if (previous_context != nullptr) {
+    ime_open_status_ = ::ImmGetOpenStatus(previous_context) != FALSE;
+    DWORD conversion_mode = 0;
+    DWORD sentence_mode = 0;
+    if (::ImmGetConversionStatus(previous_context, &conversion_mode,
+                                 &sentence_mode) != FALSE) {
+      ime_conversion_mode_ = conversion_mode;
+      ime_sentence_mode_ = sentence_mode;
+    }
+    ::ImmReleaseContext(child_content_, previous_context);
+  }
+
+  if (!DestroyOwnedImeContext()) {
+    ime_context_active_ = false;
+    return;
+  }
+  ime_context_active_ = CreateAndAssociateImeContext();
+}
+
+bool Win32Window::DestroyOwnedImeContext() {
+  if (owned_ime_context_ == nullptr) {
+    return true;
+  }
+
+  bool context_disassociated =
+      owned_ime_window_ == nullptr || !::IsWindow(owned_ime_window_);
+  if (!context_disassociated) {
+    HIMC current_context = ::ImmGetContext(owned_ime_window_);
+    if (current_context != nullptr) {
+      ::ImmReleaseContext(owned_ime_window_, current_context);
+    }
+    if (current_context == owned_ime_context_) {
+      ::ImmAssociateContext(owned_ime_window_, replaced_ime_context_);
+      current_context = ::ImmGetContext(owned_ime_window_);
+      if (current_context != nullptr) {
+        ::ImmReleaseContext(owned_ime_window_, current_context);
+      }
+    }
+    context_disassociated = current_context != owned_ime_context_;
+  }
+
+  if (context_disassociated &&
+      ::ImmDestroyContext(owned_ime_context_) != FALSE) {
+    owned_ime_window_ = nullptr;
+    owned_ime_context_ = nullptr;
+    replaced_ime_context_ = nullptr;
+  }
+  return owned_ime_context_ == nullptr;
+}
+
+bool Win32Window::CreateAndAssociateImeContext() {
+  if (child_content_ == nullptr || !::IsWindow(child_content_)) {
+    return false;
+  }
+
+  // Restoring the thread default before creating a replacement context is
+  // useful for preserving the current input method, but is not sufficient to
+  // repair a stale TSF session on its own.
+  ::ImmAssociateContextEx(child_content_, nullptr, IACE_DEFAULT);
+
+  HIMC new_context = ::ImmCreateContext();
+  if (new_context == nullptr) {
+    return false;
+  }
+  if (ime_open_status_.has_value() &&
+      ::ImmSetOpenStatus(new_context, ime_open_status_.value()) == FALSE) {
+    ::ImmDestroyContext(new_context);
+    return false;
+  }
+  if (ime_conversion_mode_.has_value() && ime_sentence_mode_.has_value()) {
+    ::ImmSetConversionStatus(new_context, ime_conversion_mode_.value(),
+                             ime_sentence_mode_.value());
+  }
+
+  HIMC replaced_context =
+      ::ImmAssociateContext(child_content_, new_context);
+  HIMC associated_context = ::ImmGetContext(child_content_);
+  if (associated_context != nullptr) {
+    ::ImmReleaseContext(child_content_, associated_context);
+  }
+  if (associated_context != new_context) {
+    ::ImmAssociateContext(child_content_, replaced_context);
+    ::ImmDestroyContext(new_context);
+    return false;
+  }
+
+  owned_ime_context_ = new_context;
+  owned_ime_window_ = child_content_;
+  replaced_ime_context_ = replaced_context;
+  return true;
 }
 
 RECT Win32Window::GetClientArea() {
