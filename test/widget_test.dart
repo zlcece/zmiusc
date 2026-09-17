@@ -167,8 +167,8 @@ void main() {
   PackageInfo.setMockInitialValues(
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
-    version: '1.1.4',
-    buildNumber: '32',
+    version: '1.1.5',
+    buildNumber: '34',
     buildSignature: '',
   );
 
@@ -543,13 +543,6 @@ void main() {
     expect(progress.last.receivedBytes, 4);
     expect(progress.last.totalBytes, 4);
     expect(progress.last.fraction, 1);
-  });
-
-  test('compares semantic update versions without using build codes', () {
-    expect(isNewerAppVersion('1.0.10', '1.0.9'), isTrue);
-    expect(isNewerAppVersion('1.1.0', '1.0.999'), isTrue);
-    expect(isNewerAppVersion('1.0.9', '1.0.9'), isFalse);
-    expect(isNewerAppVersion('1.0.8', '1.0.9'), isFalse);
   });
 
   test('compares update releases using build codes for the same version', () {
@@ -1368,6 +1361,67 @@ void main() {
         currentIndex: 0,
       ),
       isTrue,
+    );
+  });
+
+  test('bounds automatic skipping of unplayable tracks', () {
+    expect(
+      shouldAutoSkipUnplayableTrack(
+        directStreamAttempt: true,
+        skipUnplayableTracks: true,
+        canSkipNext: true,
+        consecutiveUnplayableSkips: 0,
+      ),
+      isTrue,
+    );
+    expect(
+      shouldAutoSkipUnplayableTrack(
+        directStreamAttempt: true,
+        skipUnplayableTracks: true,
+        canSkipNext: true,
+        consecutiveUnplayableSkips: 2,
+        maximumConsecutiveSkips: 3,
+      ),
+      isTrue,
+    );
+    // A queue that is entirely unreachable must stop skipping instead of
+    // cycling forever under shuffle or repeat-all.
+    expect(
+      shouldAutoSkipUnplayableTrack(
+        directStreamAttempt: true,
+        skipUnplayableTracks: true,
+        canSkipNext: true,
+        consecutiveUnplayableSkips: 3,
+        maximumConsecutiveSkips: 3,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldAutoSkipUnplayableTrack(
+        directStreamAttempt: true,
+        skipUnplayableTracks: false,
+        canSkipNext: true,
+        consecutiveUnplayableSkips: 0,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldAutoSkipUnplayableTrack(
+        directStreamAttempt: false,
+        skipUnplayableTracks: true,
+        canSkipNext: true,
+        consecutiveUnplayableSkips: 0,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldAutoSkipUnplayableTrack(
+        directStreamAttempt: true,
+        skipUnplayableTracks: true,
+        canSkipNext: false,
+        consecutiveUnplayableSkips: 0,
+      ),
+      isFalse,
     );
   });
 
@@ -4343,8 +4397,8 @@ plain text
       PackageInfo.setMockInitialValues(
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
-        version: '1.1.4',
-        buildNumber: '32',
+        version: '1.1.5',
+        buildNumber: '34',
         buildSignature: '',
       );
     });
@@ -4493,10 +4547,10 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.5',
-                  'versionCode': 33,
+                  'latestVersion': '1.1.6',
+                  'versionCode': 35,
                   'downloadUrl':
-                      'https://file.zuitimes.com/zmusic/1.1.5/zmusic-windows-x64.exe',
+                      'https://file.zuitimes.com/zmusic/1.1.6/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4524,7 +4578,7 @@ plain text
     await tester.pumpAndSettle();
 
     expect(requestCount, 1);
-    expect(find.text('发现新版本 1.1.5'), findsOneWidget);
+    expect(find.text('发现新版本 1.1.6'), findsOneWidget);
     expect(find.text('• 启动自动检查更新'), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
   });
@@ -4536,7 +4590,7 @@ plain text
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     var requestCount = 0;
     final downloadUri = Uri.parse(
-      'https://file.zuitimes.com/zmusic/1.1.5/zmusic-windows-x64.exe',
+      'https://file.zuitimes.com/zmusic/1.1.6/zmusic-windows-x64.exe',
     );
     final downloadResponse = Completer<http.Response>();
     addTearDown(() {
@@ -4561,11 +4615,11 @@ plain text
               'appName': 'zmusic',
               'platforms': {
                 'windows': {
-                  'latestVersion': '1.1.5',
-                  'versionCode': 33,
+                  'latestVersion': '1.1.6',
+                  'versionCode': 35,
                   'downloadUrl': downloadUri.toString(),
                   'githubDownloadUrl':
-                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.5/zmusic-windows-x64.exe',
+                      'https://github.com/zlcece/zmiusc/releases/download/v1.1.6/zmusic-windows-x64.exe',
                   'fileName': 'zmusic-windows-x64.exe',
                   'sha256':
                       'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
@@ -4601,8 +4655,8 @@ plain text
         .whereType<String>()
         .toList();
     expect(requestCount, 1);
-    expect(visibleText, contains('发现新版本 1.1.5'));
-    expect(find.text('当前版本：1.1.4'), findsOneWidget);
+    expect(visibleText, contains('发现新版本 1.1.6'));
+    expect(find.text('当前版本：1.1.5'), findsOneWidget);
     expect(find.text('发布时间：2026-07-14'), findsOneWidget);
     expect(find.text('• 修复播放详情跳转'), findsOneWidget);
     expect(find.text('稍后更新'), findsOneWidget);
@@ -5135,13 +5189,23 @@ plain text
     expect(find.text('曲库随机'), findsNothing);
     expect(find.byTooltip('播放音乐漫游'), findsOneWidget);
     expect(
-      tester
-          .widget<Image>(
-            find.descendant(of: roaming, matching: find.byType(Image)),
-          )
-          .image,
-      const AssetImage('assets/branding/music_roaming.png'),
+      find.descendant(of: roaming, matching: find.byType(Image)),
+      findsNothing,
     );
+    final roamingIcon = tester.widget<Icon>(
+      find.descendant(
+        of: roaming,
+        matching: find.byIcon(Icons.casino_outlined),
+      ),
+    );
+    final casualIcon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byKey(const ValueKey('music-function-随便听听')),
+        matching: find.byIcon(Icons.explore_outlined),
+      ),
+    );
+    expect(roamingIcon.color, casualIcon.color);
+    expect(roamingIcon.size, casualIcon.size);
     expect(find.byTooltip('刷新我的歌单'), findsOneWidget);
     expect(find.byTooltip('刷新公开歌单'), findsOneWidget);
     expect(find.byTooltip('刷新电台'), findsOneWidget);

@@ -4555,14 +4555,10 @@ class _RemotePlaylistDetailPage extends StatefulWidget {
 }
 
 class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
-  static const _pageSizeOptions = <int>[25, 50, 100, 200];
-
   late LibrarySectionItem _playlist;
   late Future<List<Track>> _tracksFuture;
   final Set<int> _selectedRemovalIndexes = <int>{};
   bool _batchRemoving = false;
-  int _pageIndex = 0;
-  int _pageSize = 50;
 
   @override
   void initState() {
@@ -4579,7 +4575,6 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
       _tracksFuture = widget.controller.playlistTracks(_playlist);
       _selectedRemovalIndexes.clear();
       _batchRemoving = false;
-      _pageIndex = 0;
     }
   }
 
@@ -4598,12 +4593,6 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
           future: _tracksFuture,
           builder: (context, snapshot) {
             final tracks = snapshot.data ?? const <Track>[];
-            final pageCount = libraryPageCount(tracks.length, _pageSize);
-            final pageIndex = pageCount == 0
-                ? 0
-                : _pageIndex.clamp(0, pageCount - 1);
-            final pageTracks = libraryPageItems(tracks, pageIndex, _pageSize);
-            final pageStartIndex = pageIndex * _pageSize;
             return ListView(
               padding: const EdgeInsets.fromLTRB(16, 18, 16, 32),
               children: [
@@ -4663,9 +4652,7 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
                         else
                           _TrackList(
                             controller: widget.controller,
-                            tracks: pageTracks,
-                            playbackTracks: tracks,
-                            indexOffset: pageStartIndex,
+                            tracks: tracks,
                             shrinkWrap: true,
                             padding: EdgeInsets.zero,
                             allowTrackActions: canManage,
@@ -4679,25 +4666,6 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
                                 ? (index, track) => _removeTrack(index)
                                 : null,
                           ),
-                        if (tracks.isNotEmpty) ...[
-                          const SizedBox(height: 12),
-                          _PlaylistTrackPagination(
-                            pageIndex: pageIndex,
-                            pageCount: pageCount,
-                            pageSize: _pageSize,
-                            pageSizeOptions: _pageSizeOptions,
-                            onPageChanged: (value) {
-                              setState(() => _pageIndex = value);
-                            },
-                            onPageSizeChanged: (value) {
-                              setState(() {
-                                _pageSize = value;
-                                _pageIndex = 0;
-                              });
-                            },
-                            onCustomPageSize: _setCustomPageSize,
-                          ),
-                        ],
                       ],
                     ),
                   ),
@@ -4872,155 +4840,6 @@ class _RemotePlaylistDetailPageState extends State<_RemotePlaylistDetailPage> {
         forceRefresh: true,
       );
     });
-  }
-
-  Future<void> _setCustomPageSize() async {
-    final controller = TextEditingController(text: '$_pageSize');
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('自定义每页数量'),
-        content: TextField(
-          key: const ValueKey('playlist-custom-page-size-input'),
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          decoration: const InputDecoration(hintText: '输入每页歌曲数量'),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    final pageSize = int.tryParse(value ?? '');
-    if (!mounted || pageSize == null || pageSize <= 0) {
-      return;
-    }
-    setState(() {
-      _pageSize = pageSize;
-      _pageIndex = 0;
-    });
-  }
-}
-
-class _PlaylistTrackPagination extends StatelessWidget {
-  const _PlaylistTrackPagination({
-    required this.pageIndex,
-    required this.pageCount,
-    required this.pageSize,
-    required this.pageSizeOptions,
-    required this.onPageChanged,
-    required this.onPageSizeChanged,
-    required this.onCustomPageSize,
-  });
-
-  final int pageIndex;
-  final int pageCount;
-  final int pageSize;
-  final List<int> pageSizeOptions;
-  final ValueChanged<int> onPageChanged;
-  final ValueChanged<int> onPageSizeChanged;
-  final VoidCallback onCustomPageSize;
-
-  @override
-  Widget build(BuildContext context) {
-    final firstPage = pageCount <= 3
-        ? 0
-        : pageIndex <= 1
-        ? 0
-        : pageIndex >= pageCount - 2
-        ? pageCount - 3
-        : pageIndex - 1;
-    final visiblePageCount = math.min(3, pageCount);
-
-    return Wrap(
-      key: const ValueKey('playlist-track-pagination'),
-      alignment: WrapAlignment.center,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 12,
-      runSpacing: 4,
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('每页'),
-            const SizedBox(width: 6),
-            PopupMenuButton<int>(
-              tooltip: '设置每页数量',
-              onSelected: (value) {
-                if (value == 0) {
-                  onCustomPageSize();
-                } else {
-                  onPageSizeChanged(value);
-                }
-              },
-              itemBuilder: (context) => [
-                for (final value in pageSizeOptions)
-                  PopupMenuItem(value: value, child: Text('$value 首')),
-                const PopupMenuDivider(),
-                const PopupMenuItem(value: 0, child: Text('自定义…')),
-              ],
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('$pageSize 首'),
-                    const Icon(Icons.arrow_drop_down, size: 20),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: '上一页',
-              onPressed: pageIndex <= 0
-                  ? null
-                  : () => onPageChanged(pageIndex - 1),
-              icon: const Icon(Icons.chevron_left),
-            ),
-            for (var offset = 0; offset < visiblePageCount; offset += 1)
-              TextButton(
-                style: TextButton.styleFrom(
-                  minimumSize: const Size(36, 36),
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  foregroundColor: firstPage + offset == pageIndex
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
-                  textStyle: TextStyle(
-                    fontWeight: firstPage + offset == pageIndex
-                        ? FontWeight.w700
-                        : FontWeight.w400,
-                  ),
-                ),
-                onPressed: () => onPageChanged(firstPage + offset),
-                child: Text('${firstPage + offset + 1}'),
-              ),
-            IconButton(
-              tooltip: '下一页',
-              onPressed: pageIndex >= pageCount - 1
-                  ? null
-                  : () => onPageChanged(pageIndex + 1),
-              icon: const Icon(Icons.chevron_right),
-            ),
-          ],
-        ),
-      ],
-    );
   }
 }
 
@@ -6060,93 +5879,6 @@ class _MusicHomeTab extends StatelessWidget {
   }
 }
 
-// Kept for compatibility with older widget snapshots; no longer shown.
-// ignore: unused_element
-class _SourceSummaryCard extends StatelessWidget {
-  const _SourceSummaryCard({required this.controller});
-
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final server = controller.selectedServer;
-    final songCount = controller.libraryOverview.songCount;
-    final compact = _isPhoneWidth(context);
-    final title = '音源：${server?.name ?? '未设置'}';
-    return _GlassSurface(
-      padding: EdgeInsets.all(compact ? 8 : 18),
-      darkAlpha: 0.18,
-      child: Row(
-        children: [
-          Container(
-            width: compact ? 48 : 76,
-            height: compact ? 48 : 76,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Theme.of(context).colorScheme.primaryContainer,
-            ),
-            child: Icon(
-              server?.isLocalFolder == true
-                  ? Icons.folder_open_outlined
-                  : Icons.album_outlined,
-              size: compact ? 26 : 42,
-              color: Theme.of(context).colorScheme.onPrimaryContainer,
-            ),
-          ),
-          SizedBox(width: compact ? 10 : 18),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style:
-                      (compact
-                              ? Theme.of(context).textTheme.titleLarge
-                              : Theme.of(context).textTheme.headlineSmall)
-                          ?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                SizedBox(height: compact ? 3 : 6),
-                Text(
-                  [
-                    if (server == null) '请在设置中添加音源',
-                    if (songCount != null) '歌曲数：$songCount',
-                    if (controller.isRefreshingLibrary) '扫描中',
-                  ].join(' · '),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          IconButton.filledTonal(
-            tooltip: '刷新音源',
-            constraints: compact
-                ? const BoxConstraints.tightFor(width: 42, height: 42)
-                : null,
-            padding: compact ? EdgeInsets.zero : null,
-            iconSize: compact ? 22 : null,
-            onPressed: controller.isBusy
-                ? null
-                : () => unawaited(controller.loadLibraryOverview()),
-            icon: controller.isRefreshingLibrary
-                ? const SizedBox.square(
-                    dimension: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _MusicFunctionGrid extends StatelessWidget {
   const _MusicFunctionGrid({
     required this.controller,
@@ -6250,7 +5982,6 @@ class _MusicFunctionGrid extends StatelessWidget {
       ),
       HomePlaybackSection.libraryShuffle: _MusicFunctionEntry(
         icon: Icons.casino_outlined,
-        imageAsset: 'assets/branding/music_roaming.png',
         label: '音乐漫游',
         subtitle: controller.isLoadingLibraryShuffle ? '准备中' : '连续随机播放',
         onTap: () => unawaited(onStartLibraryShuffle()),
@@ -6313,12 +6044,10 @@ class _MusicFunctionEntry {
     required this.onTap,
     this.onPlay,
     this.onRefresh,
-    this.imageAsset,
     this.isRefreshing = false,
   });
 
   final IconData icon;
-  final String? imageAsset;
   final String label;
   final String subtitle;
   final VoidCallback onTap;
@@ -6355,20 +6084,11 @@ class _MusicFunctionTileState extends State<_MusicFunctionTile> {
             padding: EdgeInsets.all(compact ? 6 : 14),
             child: Row(
               children: [
-                entry.imageAsset == null
-                    ? Icon(
-                        entry.icon,
-                        color: Theme.of(context).colorScheme.primary,
-                        size: compact ? 22 : 30,
-                      )
-                    : ClipOval(
-                        child: Image.asset(
-                          entry.imageAsset!,
-                          width: compact ? 22 : 30,
-                          height: compact ? 22 : 30,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
+                Icon(
+                  entry.icon,
+                  color: Theme.of(context).colorScheme.primary,
+                  size: compact ? 22 : 30,
+                ),
                 SizedBox(width: compact ? 7 : 12),
                 Expanded(
                   child: Column(
@@ -7369,63 +7089,6 @@ class _SearchScopeMenuState extends State<_SearchScopeMenu> {
   }
 }
 
-// Kept for compatibility with older widget snapshots; no longer shown.
-// ignore: unused_element
-class _ArtistAlbumSections extends StatelessWidget {
-  const _ArtistAlbumSections({
-    required this.controller,
-    required this.onShowSection,
-    required this.onSearchLibraryItem,
-  });
-
-  final AppController controller;
-  final ValueChanged<LibrarySectionType> onShowSection;
-  final Future<void> Function(LibrarySectionItem item) onSearchLibraryItem;
-
-  @override
-  Widget build(BuildContext context) {
-    final artists = _LibraryPreviewSection(
-      title: '歌手',
-      emptyText: '暂无歌手信息',
-      icon: Icons.person_outline,
-      items: controller.libraryOverview.artists,
-      style: _LibraryPreviewStyle.artist,
-      expanded: false,
-      onToggle: () => onShowSection(LibrarySectionType.artists),
-      onTap: onSearchLibraryItem,
-    );
-    final albums = _LibraryPreviewSection(
-      title: '专辑',
-      emptyText: '暂无专辑信息',
-      icon: Icons.album_outlined,
-      items: controller.libraryOverview.albums,
-      style: _LibraryPreviewStyle.album,
-      expanded: false,
-      onToggle: () => onShowSection(LibrarySectionType.albums),
-      onTap: onSearchLibraryItem,
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 820) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [artists, albums],
-          );
-        }
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: artists),
-            const SizedBox(width: 28),
-            Expanded(child: albums),
-          ],
-        );
-      },
-    );
-  }
-}
-
 enum _SearchResultTab { songs, artists, albums }
 
 String _searchScopeLabel(LibrarySearchScope scope) {
@@ -8304,8 +7967,6 @@ class _TrackList extends StatefulWidget {
   const _TrackList({
     required this.controller,
     required this.tracks,
-    this.playbackTracks,
-    this.indexOffset = 0,
     this.shrinkWrap = false,
     this.showArtwork = true,
     this.padding,
@@ -8317,8 +7978,6 @@ class _TrackList extends StatefulWidget {
 
   final AppController controller;
   final List<Track> tracks;
-  final List<Track>? playbackTracks;
-  final int indexOffset;
   final bool shrinkWrap;
   final bool showArtwork;
   final EdgeInsetsGeometry? padding;
@@ -8337,8 +7996,6 @@ class _TrackListState extends State<_TrackList> {
 
   AppController get controller => widget.controller;
   List<Track> get tracks => widget.tracks;
-  List<Track>? get playbackTracks => widget.playbackTracks;
-  int get indexOffset => widget.indexOffset;
   bool get shrinkWrap => widget.shrinkWrap;
   bool get showArtwork => widget.showArtwork;
   EdgeInsetsGeometry? get padding => widget.padding;
@@ -8391,7 +8048,6 @@ class _TrackListState extends State<_TrackList> {
       physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
       itemBuilder: (context, index) {
         final track = tracks[index];
-        final sourceIndex = index + indexOffset;
         final isCurrent = controller.player.currentTrack?.id == track.id;
         final isManagedLocalTrack =
             track.sourceType == MusicSourceType.localFile &&
@@ -8416,7 +8072,7 @@ class _TrackListState extends State<_TrackList> {
         final actionSize = compact ? 30.0 : 40.0;
         final colorScheme = Theme.of(context).colorScheme;
         final selectionMode = onSelectionChanged != null;
-        final isSelected = selectedIndexes?.contains(sourceIndex) ?? false;
+        final isSelected = selectedIndexes?.contains(index) ?? false;
         final isDesktopSelected =
             !selectionMode &&
             _usesDesktopTrackSelection &&
@@ -8430,7 +8086,7 @@ class _TrackListState extends State<_TrackList> {
                   context,
                   details.globalPosition,
                   track,
-                  sourceIndex,
+                  index,
                   canRemove,
                   allowTrackActions,
                 ),
@@ -8440,7 +8096,7 @@ class _TrackListState extends State<_TrackList> {
                   context,
                   details.globalPosition,
                   track,
-                  sourceIndex,
+                  index,
                   canRemove,
                   allowTrackActions,
                 ),
@@ -8455,11 +8111,11 @@ class _TrackListState extends State<_TrackList> {
               key: ValueKey('track-row-${track.id}'),
               borderRadius: BorderRadius.circular(8),
               onTap: selectionMode
-                  ? () => onSelectionChanged?.call(sourceIndex, !isSelected)
-                  : () => _handleTrackTap(track, sourceIndex),
+                  ? () => onSelectionChanged?.call(index, !isSelected)
+                  : () => _handleTrackTap(track, index),
               onDoubleTap: selectionMode || !_usesDesktopTrackSelection
                   ? null
-                  : () => _playDesktopTrack(track, sourceIndex),
+                  : () => _playDesktopTrack(track, index),
               child: SizedBox(
                 height: rowHeight,
                 child: Padding(
@@ -8581,11 +8237,11 @@ class _TrackListState extends State<_TrackList> {
 
   void _handleTrackTap(Track track, int index) {
     if (!_usesDesktopTrackSelection) {
-      unawaited(controller.playTrackList(playbackTracks ?? tracks, index));
+      unawaited(controller.playTrackList(tracks, index));
       return;
     }
     if (_desktopSelectedTrackId == track.id) {
-      unawaited(controller.playTrackList(playbackTracks ?? tracks, index));
+      unawaited(controller.playTrackList(tracks, index));
       return;
     }
     setState(() => _desktopSelectedTrackId = track.id);
@@ -8595,7 +8251,7 @@ class _TrackListState extends State<_TrackList> {
     if (_desktopSelectedTrackId != track.id) {
       setState(() => _desktopSelectedTrackId = track.id);
     }
-    unawaited(controller.playTrackList(playbackTracks ?? tracks, index));
+    unawaited(controller.playTrackList(tracks, index));
   }
 
   Future<void> _showTrackMenu(
@@ -11130,226 +10786,6 @@ class _SegmentedLoadingPainter extends CustomPainter {
   }
 }
 
-// Legacy source editor retained only for old stored-data migration tests.
-// ignore: unused_element
-class _SourceManagerPanel extends StatelessWidget {
-  const _SourceManagerPanel({required this.controller});
-
-  final AppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final compact = _isPhoneWidth(context);
-    final showAddLocalSource =
-        Theme.of(context).platform != TargetPlatform.android;
-    final actionButtons = _SourceManagerActionButtons(
-      onImportFromText: () => _importFromText(context),
-      onAddServer: () => _addServer(context),
-      onAddLocalSource: showAddLocalSource
-          ? () => _addLocalSource(context)
-          : null,
-    );
-    return Padding(
-      padding: EdgeInsets.fromLTRB(12, compact ? 2 : 4, 12, compact ? 10 : 12),
-      child: AnimatedBuilder(
-        animation: controller,
-        builder: (context, _) {
-          final sourceList = controller.servers.isEmpty
-              ? Padding(
-                  padding: EdgeInsets.fromLTRB(4, compact ? 4 : 8, 4, 4),
-                  child: Text(
-                    '还没有音源。',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                )
-              : RadioGroup<String>(
-                  groupValue: controller.selectedServer?.id,
-                  onChanged: (serverId) {
-                    if (serverId != null) {
-                      controller.selectServer(serverId);
-                    }
-                  },
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: controller.servers.map((server) {
-                      return _SourceListItem(
-                        server: server,
-                        compact: compact,
-                        isBusy: controller.isBusy,
-                        onSelected: () => controller.selectServer(server.id),
-                        onTest: () => _testServer(context, server),
-                        onExport: () => _exportText(context, server),
-                        onEdit: () => _editServer(context, server),
-                        onDelete: () => controller.removeServer(server.id),
-                      );
-                    }).toList(),
-                  ),
-                );
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    '音源',
-                    style: compact
-                        ? Theme.of(context).textTheme.titleSmall
-                        : Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: actionButtons,
-                    ),
-                  ),
-                ],
-              ),
-              SizedBox(height: compact ? 12 : 10),
-              sourceList,
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  Future<void> _testServer(BuildContext context, ServerConfig server) async {
-    await controller.testServer(server);
-    if (context.mounted) {
-      _showSourceMessage(context, controller.statusMessage ?? '测试完成。');
-    }
-  }
-
-  Future<void> _addServer(BuildContext context) async {
-    final result = await showDialog<ServerConfig>(
-      context: context,
-      builder: (context) => _ServerDialog(controller: controller),
-    );
-    if (result != null) {
-      await controller.saveServer(result);
-    }
-  }
-
-  Future<void> _addLocalSource(BuildContext context) async {
-    final result = await showDialog<ServerConfig>(
-      context: context,
-      builder: (context) => const _LocalSourceDialog(),
-    );
-    if (result != null) {
-      await controller.saveServer(result);
-    }
-  }
-
-  Future<void> _editServer(BuildContext context, ServerConfig server) async {
-    final result = await showDialog<ServerConfig>(
-      context: context,
-      builder: (context) => server.isLocalFolder
-          ? _LocalSourceDialog(initial: server)
-          : _ServerDialog(controller: controller, initial: server),
-    );
-    if (result != null) {
-      await controller.saveServer(result, previousId: server.id);
-    }
-  }
-
-  Future<void> _importFromText(BuildContext context) async {
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => const _SourceConfigTextDialog(),
-    );
-    if (value == null || value.trim().isEmpty) {
-      return;
-    }
-    try {
-      final count = await controller.importServerConfigText(value);
-      if (context.mounted) {
-        _showSourceMessage(context, '已导入 $count 个音源。');
-      }
-    } catch (error) {
-      if (context.mounted) {
-        _showSourceMessage(context, _formatError(error));
-      }
-    }
-  }
-
-  Future<void> _exportText(BuildContext context, ServerConfig server) async {
-    try {
-      final value = controller.exportSingleServerConfigText(server);
-      await Clipboard.setData(ClipboardData(text: value));
-      if (context.mounted) {
-        _showSourceMessage(context, '已复制到剪贴板。');
-      }
-    } catch (error) {
-      if (context.mounted) {
-        _showSourceMessage(context, _formatError(error));
-      }
-    }
-  }
-}
-
-class _SourceManagerActionButtons extends StatelessWidget {
-  const _SourceManagerActionButtons({
-    required this.onImportFromText,
-    required this.onAddServer,
-    required this.onAddLocalSource,
-  });
-
-  final VoidCallback onImportFromText;
-  final VoidCallback onAddServer;
-  final VoidCallback? onAddLocalSource;
-
-  @override
-  Widget build(BuildContext context) {
-    const padding = EdgeInsets.symmetric(horizontal: 8, vertical: 4);
-    final textButtonStyle = TextButton.styleFrom(
-      minimumSize: Size.zero,
-      padding: padding,
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
-    );
-    final filledButtonStyle = FilledButton.styleFrom(
-      minimumSize: Size.zero,
-      padding: padding,
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
-    );
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextButton.icon(
-            onPressed: onImportFromText,
-            style: textButtonStyle,
-            icon: const Icon(Icons.content_paste_outlined, size: 18),
-            label: const Text('导入'),
-          ),
-          const SizedBox(width: 4),
-          FilledButton.icon(
-            onPressed: onAddServer,
-            style: filledButtonStyle,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('添加'),
-          ),
-          if (onAddLocalSource != null) ...[
-            const SizedBox(width: 4),
-            FilledButton.tonalIcon(
-              onPressed: onAddLocalSource,
-              style: filledButtonStyle,
-              icon: const Icon(Icons.folder_open_outlined, size: 18),
-              label: const Text('添加'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 const _imageTypeGroup = XTypeGroup(
   label: '图片文件',
   extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
@@ -11420,569 +10856,6 @@ String _formatError(Object error) {
       .replaceFirst('FormatException: ', '');
 }
 
-class _SourceConfigTextDialog extends StatefulWidget {
-  const _SourceConfigTextDialog();
-
-  @override
-  State<_SourceConfigTextDialog> createState() =>
-      _SourceConfigTextDialogState();
-}
-
-class _SourceConfigTextDialogState extends State<_SourceConfigTextDialog> {
-  final TextEditingController _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      insetPadding: _responsiveDialogInsetPadding(context),
-      title: const Text('导入'),
-      content: ConstrainedBox(
-        constraints: _responsiveDialogConstraints(context, maxWidth: 560),
-        child: TextField(
-          controller: _controller,
-          minLines: 8,
-          maxLines: 12,
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            hintText: '粘贴 base64 编码后的音源配置',
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(_controller.text),
-          child: const Text('导入'),
-        ),
-      ],
-    );
-  }
-}
-
-class _SourceListItem extends StatelessWidget {
-  const _SourceListItem({
-    required this.server,
-    required this.compact,
-    required this.isBusy,
-    required this.onSelected,
-    required this.onTest,
-    required this.onExport,
-    required this.onEdit,
-    required this.onDelete,
-  });
-
-  final ServerConfig server;
-  final bool compact;
-  final bool isBusy;
-  final VoidCallback onSelected;
-  final Future<void> Function() onTest;
-  final Future<void> Function() onExport;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final subtitle = _serverSubtitle(server);
-    if (!compact) {
-      return ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Radio<String>(value: server.id),
-        title: Text(server.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: _SourceActionRow(
-          isBusy: isBusy,
-          onTest: onTest,
-          onExport: onExport,
-          onEdit: onEdit,
-          onDelete: onDelete,
-        ),
-        onTap: onSelected,
-      );
-    }
-
-    return InkWell(
-      onTap: onSelected,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: 36,
-                  child: Radio<String>(
-                    value: server.id,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          server.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          subtitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: _SourceActionRow(
-                isBusy: isBusy,
-                compact: true,
-                onTest: onTest,
-                onExport: onExport,
-                onEdit: onEdit,
-                onDelete: onDelete,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SourceActionRow extends StatefulWidget {
-  const _SourceActionRow({
-    required this.isBusy,
-    required this.onTest,
-    required this.onExport,
-    required this.onEdit,
-    required this.onDelete,
-    this.compact = false,
-  });
-
-  final bool isBusy;
-  final Future<void> Function() onTest;
-  final Future<void> Function() onExport;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-  final bool compact;
-
-  @override
-  State<_SourceActionRow> createState() => _SourceActionRowState();
-}
-
-class _SourceActionRowState extends State<_SourceActionRow> {
-  Timer? _exportFeedbackTimer;
-  bool _exportCopied = false;
-
-  @override
-  void dispose() {
-    _exportFeedbackTimer?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _handleExport() async {
-    await widget.onExport();
-    if (!mounted) {
-      return;
-    }
-    setState(() => _exportCopied = true);
-    _exportFeedbackTimer?.cancel();
-    _exportFeedbackTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() => _exportCopied = false);
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        _sourceIconButton(
-          tooltip: '测试连接',
-          compact: widget.compact,
-          onPressed: widget.isBusy
-              ? null
-              : () async {
-                  await widget.onTest();
-                },
-          icon: Icons.wifi_tethering,
-        ),
-        _sourceIconButton(
-          tooltip: '导出',
-          compact: widget.compact,
-          onPressed: () => unawaited(_handleExport()),
-          icon: _exportCopied ? Icons.check : Icons.copy_all_outlined,
-        ),
-        _sourceIconButton(
-          tooltip: '编辑',
-          compact: widget.compact,
-          onPressed: widget.onEdit,
-          icon: Icons.edit_outlined,
-        ),
-        _sourceIconButton(
-          tooltip: '删除',
-          compact: widget.compact,
-          onPressed: widget.onDelete,
-          icon: Icons.delete_outline,
-        ),
-      ],
-    );
-  }
-}
-
-Widget _sourceIconButton({
-  required String tooltip,
-  required VoidCallback? onPressed,
-  required IconData icon,
-  bool compact = false,
-}) {
-  final size = compact ? 32.0 : 40.0;
-  return SizedBox.square(
-    dimension: size,
-    child: IconButton(
-      tooltip: tooltip,
-      padding: EdgeInsets.zero,
-      constraints: BoxConstraints.tightFor(width: size, height: size),
-      onPressed: onPressed,
-      iconSize: compact ? 18 : null,
-      icon: Icon(icon),
-    ),
-  );
-}
-
-String _serverSubtitle(ServerConfig server) {
-  if (server.isLocalFolder) {
-    return server.localPath;
-  }
-  return server.normalizedBaseUrl;
-}
-
-class _LocalSourceDialog extends StatefulWidget {
-  const _LocalSourceDialog({this.initial});
-
-  final ServerConfig? initial;
-
-  @override
-  State<_LocalSourceDialog> createState() => _LocalSourceDialogState();
-}
-
-class _LocalSourceDialogState extends State<_LocalSourceDialog> {
-  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  late final TextEditingController _nameController;
-  late final TextEditingController _pathController;
-
-  @override
-  void initState() {
-    super.initState();
-    final initial = widget.initial;
-    _nameController = TextEditingController(text: initial?.name ?? '');
-    _pathController = TextEditingController(text: initial?.localPath ?? '');
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _pathController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final compact = _isPhoneWidth(context);
-    return AlertDialog(
-      insetPadding: _responsiveDialogInsetPadding(context),
-      title: Text(widget.initial == null ? '添加本地音源' : '编辑本地音源'),
-      content: ConstrainedBox(
-        constraints: _responsiveDialogConstraints(context, maxWidth: 520),
-        child: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: _nameController,
-                  decoration: const InputDecoration(labelText: '名称'),
-                  validator: _required,
-                ),
-                const SizedBox(height: 8),
-                if (compact)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextFormField(
-                        controller: _pathController,
-                        decoration: const InputDecoration(
-                          labelText: '音乐文件夹',
-                          hintText: r'D:\Music',
-                        ),
-                        validator: _localFolder,
-                      ),
-                      const SizedBox(height: 12),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: OutlinedButton.icon(
-                          onPressed: _pickFolder,
-                          icon: const Icon(Icons.folder_open_outlined),
-                          label: const Text('选择'),
-                        ),
-                      ),
-                    ],
-                  )
-                else
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          controller: _pathController,
-                          decoration: const InputDecoration(
-                            labelText: '音乐文件夹',
-                            hintText: r'D:\Music',
-                          ),
-                          validator: _localFolder,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: OutlinedButton.icon(
-                          onPressed: _pickFolder,
-                          icon: const Icon(Icons.folder_open_outlined),
-                          label: const Text('选择'),
-                        ),
-                      ),
-                    ],
-                  ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    '保存后会扫描文件夹内的音频文件，并支持在歌曲列表中查看/编辑本地文件元数据。',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(onPressed: _save, child: const Text('保存')),
-      ],
-    );
-  }
-
-  Future<void> _pickFolder() async {
-    final path = await getDirectoryPath(
-      initialDirectory: _pathController.text.trim().isEmpty
-          ? null
-          : _pathController.text.trim(),
-    );
-    if (path == null) {
-      return;
-    }
-    setState(() {
-      _pathController.text = path;
-      if (_nameController.text.trim().isEmpty) {
-        _nameController.text = _folderName(path);
-      }
-    });
-  }
-
-  void _save() {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    Navigator.of(context).pop(_sourceFromFields());
-  }
-
-  ServerConfig _sourceFromFields() {
-    final localPath = _pathController.text.trim();
-    return ServerConfig(
-      id: localSourceId(localPath),
-      name: _nameController.text.trim(),
-      baseUrl: '',
-      username: '',
-      password: '',
-      sourceKind: MusicSourceKind.localFolder,
-      localPath: localPath,
-    );
-  }
-}
-
-class _ServerDialog extends StatefulWidget {
-  const _ServerDialog({required this.controller, this.initial});
-
-  final AppController controller;
-  final ServerConfig? initial;
-
-  @override
-  State<_ServerDialog> createState() => _ServerDialogState();
-}
-
-class _ServerDialogState extends State<_ServerDialog> {
-  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  late final TextEditingController _nameController;
-  late final TextEditingController _urlController;
-  late final TextEditingController _usernameController;
-  late final TextEditingController _passwordController;
-  bool _isTesting = false;
-
-  @override
-  void initState() {
-    super.initState();
-    final initial = widget.initial;
-    _nameController = TextEditingController(text: initial?.name ?? '');
-    _urlController = TextEditingController(text: initial?.baseUrl ?? '');
-    _usernameController = TextEditingController(text: initial?.username ?? '');
-    _passwordController = TextEditingController(text: initial?.password ?? '');
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _urlController.dispose();
-    _usernameController.dispose();
-    _passwordController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      insetPadding: _responsiveDialogInsetPadding(context),
-      title: Text(widget.initial == null ? '添加音源' : '编辑音源'),
-      content: ConstrainedBox(
-        constraints: _responsiveDialogConstraints(context, maxWidth: 460),
-        child: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: _nameController,
-                  decoration: const InputDecoration(labelText: '名称'),
-                  validator: _required,
-                ),
-                TextFormField(
-                  controller: _urlController,
-                  decoration: const InputDecoration(
-                    labelText: '服务地址',
-                    hintText: 'https://music.example.com',
-                  ),
-                  keyboardType: TextInputType.url,
-                  validator: _url,
-                ),
-                TextFormField(
-                  controller: _usernameController,
-                  decoration: const InputDecoration(labelText: '用户名'),
-                  validator: _required,
-                ),
-                TextFormField(
-                  controller: _passwordController,
-                  decoration: const InputDecoration(labelText: '密码'),
-                  obscureText: true,
-                  validator: _required,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        OutlinedButton.icon(
-          onPressed: _isTesting ? null : _testConnection,
-          icon: _isTesting
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.wifi_tethering),
-          label: Text(_isTesting ? '测试中' : '测试连接'),
-        ),
-        FilledButton(onPressed: _save, child: const Text('保存')),
-      ],
-    );
-  }
-
-  Future<void> _testConnection() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    setState(() {
-      _isTesting = true;
-    });
-    await widget.controller.testServer(_serverFromFields());
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _isTesting = false;
-    });
-    _showSourceMessage(context, widget.controller.statusMessage ?? '测试完成。');
-  }
-
-  void _save() {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    Navigator.of(context).pop(_serverFromFields());
-  }
-
-  ServerConfig _serverFromFields() {
-    final baseUrl = _urlController.text.trim();
-    return ServerConfig(
-      id: normalizeServerUrl(baseUrl),
-      name: _nameController.text.trim(),
-      baseUrl: baseUrl,
-      username: _usernameController.text.trim(),
-      password: _passwordController.text,
-    );
-  }
-}
-
 String? _required(String? value) {
   if (value == null || value.trim().isEmpty) {
     return '必填';
@@ -12000,26 +10873,6 @@ String? _url(String? value) {
     return '请输入有效 URL';
   }
   return null;
-}
-
-String? _localFolder(String? value) {
-  final requiredError = _required(value);
-  if (requiredError != null) {
-    return requiredError;
-  }
-  final path = value!.trim();
-  if (!Directory(path).existsSync()) {
-    return '文件夹不存在';
-  }
-  return null;
-}
-
-String _folderName(String path) {
-  final parts = path
-      .split(RegExp(r'[\\/]'))
-      .where((part) => part.trim().isNotEmpty)
-      .toList();
-  return parts.isEmpty ? '本地音乐' : parts.last;
 }
 
 String _formatGb(int bytes) {

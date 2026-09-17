@@ -20,7 +20,6 @@ import 'player_controller.dart';
 import 'playback_source.dart';
 import 'playlist_sync.dart';
 import 'settings_models.dart';
-import 'source_config_codec.dart';
 import 'subsonic_api.dart';
 
 const String defaultMusicServerUrl = 'https://fnnav.zuitimes.com';
@@ -2163,53 +2162,6 @@ class AppController extends ChangeNotifier {
     return results.songs;
   }
 
-  String exportServerConfigText() {
-    if (servers.isEmpty) {
-      throw Exception('还没有可导出的音源。');
-    }
-    return encodeSourceConfig(
-      servers: servers,
-      selectedServerId: selectedServerId,
-    );
-  }
-
-  String exportSingleServerConfigText(ServerConfig server) {
-    return encodeSourceConfig(servers: [server], selectedServerId: server.id);
-  }
-
-  Future<int> importServerConfigText(String value) async {
-    final bundle = decodeSourceConfig(value);
-    var changedCount = 0;
-    for (final server in bundle.servers) {
-      final normalized = _normalizeServer(server);
-      final index = servers.indexWhere((value) => value.id == normalized.id);
-      if (index >= 0) {
-        servers[index] = normalized;
-      } else {
-        servers.add(normalized);
-      }
-      changedCount++;
-    }
-
-    final selectedUrl = bundle.selectedServerUrl;
-    final importedSelectedId = _resolveServerId(selectedUrl);
-    if (importedSelectedId != null) {
-      selectedServerId = importedSelectedId;
-    } else if (selectedServerId == null ||
-        !servers.any((server) => server.id == selectedServerId)) {
-      selectedServerId = servers.isEmpty ? null : servers.first.id;
-    }
-
-    await store.saveServers(servers);
-    await store.saveSelectedServerId(selectedServerId);
-    statusMessage = '已导入 $changedCount 个音源。';
-    notifyListeners();
-    if (selectedServer != null) {
-      await loadLibraryOverview();
-    }
-    return changedCount;
-  }
-
   Future<void> addCustomTrack(Track track) async {
     customTracks.removeWhere((value) => value.id == track.id);
     customTracks.insert(0, track);
@@ -2979,24 +2931,6 @@ class AppController extends ChangeNotifier {
       baseUrl: normalizedUrl,
       username: username,
     );
-  }
-
-  String? _resolveServerId(String? value) {
-    if (value == null || value.isEmpty) {
-      return null;
-    }
-    for (final server in servers) {
-      if (server.id == value) {
-        return server.id;
-      }
-    }
-    final normalizedUrl = normalizeServerUrl(value);
-    for (final server in servers) {
-      if (!server.isLocalFolder && server.normalizedBaseUrl == normalizedUrl) {
-        return server.id;
-      }
-    }
-    return null;
   }
 
   Future<void> _loadLocalLibrary(ServerConfig server) async {

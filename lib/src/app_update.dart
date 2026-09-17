@@ -355,10 +355,6 @@ Future<void> openAndroidUpdateInstaller(File updateFile) async {
   });
 }
 
-bool isNewerAppVersion(String latestVersion, String currentVersion) {
-  return _compareAppVersions(latestVersion, currentVersion) > 0;
-}
-
 bool isNewerAppRelease({
   required String latestVersion,
   required int latestBuildNumber,

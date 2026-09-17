@@ -14,6 +14,11 @@ import 'streaming_audio_cache_source.dart';
 const Duration _playbackOpenInterruptTimeout = Duration(seconds: 3);
 const int _streamingStartupProgressExtensionLimit = 5;
 
+// A queue whose tracks are all unreachable must not be skipped through
+// forever. Shuffle and repeat-all always report another track as available,
+// so the automatic skip needs its own bound.
+const int _maximumConsecutiveUnplayableSkips = 10;
+
 class PlayerController extends ChangeNotifier {
   PlayerController({
     @visibleForTesting PlaybackEngine? playbackEngine,
@@ -100,6 +105,7 @@ class PlayerController extends ChangeNotifier {
   int? _directFallbackRequestId;
   bool _currentTrackNeedsOpening = false;
   bool _skipUnplayableTracks = true;
+  int _consecutiveUnplayableSkips = 0;
   double _volume = 0.55;
   Timer? _startupRecoveryTimer;
   Future<void> _audioOperation = Future.value();
@@ -241,6 +247,7 @@ class PlayerController extends ChangeNotifier {
     await _clearNextTrackPrefetch();
     _clearTransientPlaybackState();
     _forwardOnlyQueue = false;
+    _consecutiveUnplayableSkips = 0;
     _queue = List.of(tracks);
     await _playIndex(index, ++_playRequestId);
   }
@@ -254,6 +261,7 @@ class PlayerController extends ChangeNotifier {
     _clearTransientPlaybackState();
     _forwardOnlyQueue = true;
     _playbackMode = PlaybackMode.sequential;
+    _consecutiveUnplayableSkips = 0;
     _queue = List.of(tracks);
     await _playIndex(index, ++_playRequestId);
   }
@@ -1052,11 +1060,13 @@ class PlayerController extends ChangeNotifier {
       }
       final opening = _openingPlaybackRequestId == requestId;
       if (!opening && _audioPlayer.position > const Duration(seconds: 1)) {
+        _consecutiveUnplayableSkips = 0;
         return;
       }
       final stalled =
           opening || _audioPlayer.buffering || !_audioPlayer.playing;
       if (!stalled) {
+        _consecutiveUnplayableSkips = 0;
         return;
       }
       final activeProxy = _streamingCacheProxy;
@@ -1185,10 +1195,25 @@ class PlayerController extends ChangeNotifier {
           : '播放启动多次失败，已停止缓冲，可手动重试当前歌曲',
     );
     notifyListeners();
-    if (directStreamAttempt && _skipUnplayableTracks && canSkipNext) {
-      AppLogger.instance.warning('player', '当前歌曲不可播放，正在自动切换下一首');
-      await playNext();
+    if (!directStreamAttempt || !_skipUnplayableTracks || !canSkipNext) {
+      return;
     }
+    if (!shouldAutoSkipUnplayableTrack(
+      directStreamAttempt: directStreamAttempt,
+      skipUnplayableTracks: _skipUnplayableTracks,
+      canSkipNext: canSkipNext,
+      consecutiveUnplayableSkips: _consecutiveUnplayableSkips,
+    )) {
+      AppLogger.instance.error(
+        'player',
+        '连续 $_consecutiveUnplayableSkips 首歌曲都无法播放，已停止自动切歌，'
+            '请检查网络或音源服务后手动重试',
+      );
+      return;
+    }
+    _consecutiveUnplayableSkips++;
+    AppLogger.instance.warning('player', '当前歌曲不可播放，正在自动切换下一首');
+    await playNext();
   }
 
   Future<void> _recoverFromCompletedCache(
@@ -2002,4 +2027,22 @@ bool shouldResumePlaybackAfterSeek({
   required Track? currentTrack,
 }) {
   return wasPlaying && currentTrack != null;
+}
+
+/// Decides whether an unplayable track may hand playback to the next one.
+///
+/// Shuffle and repeat-all always report a next track, so an unreachable
+/// server would otherwise skip through the queue forever.
+@visibleForTesting
+bool shouldAutoSkipUnplayableTrack({
+  required bool directStreamAttempt,
+  required bool skipUnplayableTracks,
+  required bool canSkipNext,
+  required int consecutiveUnplayableSkips,
+  int maximumConsecutiveSkips = _maximumConsecutiveUnplayableSkips,
+}) {
+  return directStreamAttempt &&
+      skipUnplayableTracks &&
+      canSkipNext &&
+      consecutiveUnplayableSkips < maximumConsecutiveSkips;
 }
