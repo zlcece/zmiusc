@@ -112,7 +112,7 @@
 ## 打包记忆
 
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
-- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.6+35`。
+- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.6+36`。
 - 正式发布必须等待 GitHub Actions 的 Windows、Android 通用版、Android DiLink、macOS、iOS 以及最终 Release 任务全部成功；随后从该 GitHub Release 下载五个最终资产到本地 `dist`，以下载后的真实文件验证版本、Android 证书/ABI/签名、文件大小和哈希。只有实物验证通过后，才根据这五个下载文件重新生成 `dist/update.json`；禁止根据构建前文件、本机文件或 Actions 临时产物预填最终大小和哈希。
 - macOS 源码已补齐；“打测试包”仍只在当前 Windows 主机生成 Windows、Android 通用版和 Android DiLink 三个产物，macOS/iOS 不做本地交叉编译。“打包/打正式包”则由 GitHub Actions 的 macOS runner 生成 macOS 和 iOS 产物，共同组成五端正式 Release。
 - GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
@@ -139,6 +139,8 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-11-02：完成用户要求的同版本修复发布 `1.1.6+36`。`v1.1.6` 更新至源码 `85853fbdd315d92747bb5b86b89cd7288faa7ad2`，GitHub Actions `41397509739` 的 Windows、Android、DiLink、macOS、iOS 与 Release 六项全部成功；`https://github.com/zlcece/zmiusc/releases/tag/v1.1.6` 同名资产和说明已替换。下载最终五包后完成版本/完整性/签名/ABI/压缩/16KB 对齐验证：Windows 安装器 `1.1.6.36`、内嵌 runner `1.1.6+36`；Android 双包 `1.1.6/versionCode 36`、minSdk 24、仅 ARM64/ARMv7，通用 target 36/V2、DiLink target 29/V1-only，两包延续原证书 SHA256 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`；macOS/iOS plist 为 `1.1.6/36`。最终大小/SHA256：Windows `17,056,638` / `D1D0F010005E93D23C53D6BD1F7C1B88F954D6404BD907089D6C6280A68A351F`；Android `24,401,298` / `D29E9D2CBBC7B27F08ECF2F5249F484EFA97B5C9663B81E3982B8DB858A62FD6`；DiLink `24,393,082` / `F21F1F29DEC6D1C61480BDF8C46C31283085DFBF8CBE504608DF4722DA1D3A48`；macOS `33,319,005` / `C1BB11E8F6B5C0CC6B8806706EF3672F881A732679028E5B683B83C4FA903A4B`；iOS `11,283,732` / `808084A22F572DBEA21F7F613253E3541053EF210945328A040BC6FC7BDA27B8`，均匹配 GitHub digest。根据实物生成并复核 dist/update.json 五节点、build/versionCode 36、双通道地址、分平台更新说明和 MD5/SHA256，清单 SHA256 `C636D801552401EEF48CFDEB6CC5AC00176BC908724888B0046C07CDA265D929`。实际登录生命周期已通过源码级线上验证，未启动新安装器影响运行中的用户播放器、未上传音频；macOS 未公证、iOS 未签名状态不变。日志与报告在 `build/release-1.1.6-authfix`，用户自行将五包替换至文件服务器 `/zmusic/1.1.6/` 并将清单替换至 `/zmusic/0/update.json`；本轮未修改 Music Ext 服务端和文件服务器。
 
 - 2026-11-02：`1.1.6+36` 发布前检查通过：离线依赖解析、格式化、`git diff --check` 无问题，`flutter --no-version-check analyze --no-pub` 无问题（99.5 秒），完整 `flutter --no-version-check test --no-pub --reporter expanded` 162 项通过（34 秒），另有独立真实账号会话验证通过。只提交客户端修复、内部版本号/发布工作流/测试版本信息及项目记录，临时诊断与真实环境测试脚本不进入仓库；准备按用户要求更新原 v1.1.6 并替换同名五端 Release 资产。
 
