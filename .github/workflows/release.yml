@@ -264,7 +264,7 @@ jobs:
           APP_PATH='build/ios/iphoneos/Runner.app'
           test -d "$APP_PATH"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = '1.1.6'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '35'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = '36'
           mkdir -p dist/ios/Payload
           cp -R "$APP_PATH" dist/ios/Payload/
           rm -rf dist/ios/Payload/Runner.app/_CodeSignature
@@ -301,10 +301,12 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Zmusic 1.1.6
           body: |
-            Zmusic 1.1.6+35 五端正式版。
+            Zmusic 1.1.6+36 五端正式版，替换原 1.1.6+35 产物。
 
             - 全平台：优化 DeepSeek AI 推荐响应处理，取消固定 1,024 token 输出限制，完善异常提示与服务回退日志。
             - Windows：搜索框外新增 Music Ext 外网搜歌入口，复用当前 Navidrome 登录。
+            - Windows：修复 Music Ext 外网搜歌原生登录被来源校验拒绝的问题，已完成真实账号的票据交换、身份查询和登出验证。
+            - Windows / macOS：同步修复原生上传、确认、取消与会话清理请求的来源头兼容性，保留 Cookie、CSRF 和禁止重定向。
             - Windows / macOS：标签管理支持两列编辑、独立专辑歌手、未保存红框、封面单独选择及 Music Ext 上传；曲库已存在时不提供上传。移除一键替换，统一填入后手动保存。
             - Android：改善更新安装授权返回流程与安装状态提示。
             - Android DiLink：兼容车机缺少未知来源授权页面的情况，完善系统安装器调用与 APK 文件读取。

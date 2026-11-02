@@ -8,6 +8,7 @@
 - 每次对话执行代码、配置、资源、测试或打包相关任务时，都必须读取并使用 `karpathy-guidelines` skill，按“先明确假设、简单优先、外科手术式修改、目标驱动验证”的方式执行。
 - 代码修改优先使用 `rg` 搜索，手工编辑使用 `apply_patch`。
 - 改动保持小范围、贴合现有 Flutter/Dart 风格，不做无关重构。
+- Music Ext 服务端已迁移到其他位置维护，`D:\work\D\music_ext` 是过时源码；除非用户重新明确授权，不修改该目录或线上 Music Ext 服务端代码/配置，接入问题优先在本项目客户端处理。
 - 普通功能修改只实现代码并做必要格式化，不自动新增或运行测试、不运行 `flutter analyze`、不打包；只有用户明确说“打测试包”时才进入测试逻辑并运行分析、测试和三端测试打包。
 - 用户只说“打包”或“打正式包”时，必须先运行 `flutter analyze` 和完整 `flutter test`；全部通过后再按正式发布规则升版、提交标签、构建五端并生成 `update.json`。验证失败时不得推送发布标签，必须先修复并重新完成验证；若同一条指令另有明确要求则以最新明确要求为准。
 - Windows 上避免破坏性命令；递归删除/移动前确认目标在项目或明确临时目录内。
@@ -24,6 +25,8 @@
 - 设置页的应用 Logo 与背景图使用两个独立上传入口和持久化路径；未上传背景图时只显示主题底色，不加载内置默认图，有效的上传背景继续全屏填充，Logo 作为独立淡化品牌层。
 
 ## 核心功能记忆
+
+- Music Ext 原生 HTTP 请求不手动添加浏览器 `Origin` / `Sec-Fetch-*` 请求头；会话握手继续使用当前账号的 Subsonic proof 和一次性票据，上传/确认/取消/登出保留独立 Cookie 与 CSRF，所有原生请求禁止跟随重定向。WebView 内的网页请求使用浏览器自动生成的来源头。不要为了原生登录而伪造浏览器的 `Sec-Fetch-Site: same-origin`。
 
 - Music Ext 仅在 Windows 版提供搜索输入框右侧框外的“外网搜歌”独立按钮，首页和搜索结果页共用同一布局，其他端不显示也不打开该功能；设置页不显示 Music Ext 配置，默认服务地址为 `https://fnext.zuitimes.com`，新安装和旧配置中缺失/空白的地址均使用该默认值。Music Ext 为独立的无侵入式搜索下载服务；入口打开共用 Web，复用当前 Navidrome 身份。服务仅以 Navidrome 验证账号与管理员权限，下载目录无需属于曲库，文件保存即完成；客户端不接收入库完成通知、不主动刷新或检查曲库，所有正常播放仍走原有 Navidrome 接口。
 
@@ -136,6 +139,16 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-11-02：`1.1.6+36` 发布前检查通过：离线依赖解析、格式化、`git diff --check` 无问题，`flutter --no-version-check analyze --no-pub` 无问题（99.5 秒），完整 `flutter --no-version-check test --no-pub --reporter expanded` 162 项通过（34 秒），另有独立真实账号会话验证通过。只提交客户端修复、内部版本号/发布工作流/测试版本信息及项目记录，临时诊断与真实环境测试脚本不进入仓库；准备按用户要求更新原 v1.1.6 并替换同名五端 Release 资产。
+
+- 2026-11-02：按用户“验证能登录后打生产，仍用 1.1.6，手动替换服务器包”执行同可见版本修复发布。独立临时 Flutter 测试直接调用修改后的 `MusicExtSession.open`，在内存中复用本机安装版当前账号，实测 handoff/exchange、session 身份与 CSRF 一致性、sources/uploads 配置读取均成功；错误 CSRF 登出返回 403，正确登出后 session 返回 401，测试通过（8 秒）。未打印/另存账号密码、Cookie、票据或响应正文，未上传音频、修改 Music Ext 服务端或影响正在运行的播放器。仅可见版本保持 1.1.6，内部 build/versionCode 从 35 升至 36；更新工作流 iOS 断言、Release 说明和测试包信息。验证报告在 `build/release-1.1.6-authfix`；接续 analyze/完整测试通过后更新 v1.1.6、重建五端并生成最终清单，结果另记。
+
+- 2026-11-02：按用户“服务端已迁移，不改过时 music_ext；1.1.5 测试包曾可用，要求客户端解决”修复 Zmusic 原生接入。现存 1.1.5 测试包与 1.1.6 AOT 均包含同一默认域名和 handoff/exchange 路径；当时接入文件尚未跟踪，缺少独立测试包源码快照，不能确认完整请求头的历史差异。线上无账号诊断确认不带 Origin 的 handoff/exchange 进入参数校验返回 422，logout 保持 401；浏览器 Fetch Metadata 分支与原生手动 Origin 存在兼容差异。移除会话 POST、上传/确认/取消及暂存清理请求中手动添加的 Origin，按原生客户端语义发送，不伪造 Sec-Fetch-*；proof、Cookie、CSRF、超时和禁止重定向规则均保留。保留 HTTP 状态分类提示与安全日志，撤回要求修改服务端配置的提示。仅修改本项目，无服务器修改、真实账号登录或音频上传。验证：现存安装包静态检查、公开接口诊断、Dart 格式化和 git diff --check；按普通修改规则未新增/运行测试、未运行 analyze、未打包/升版，真实账号完整链路待新包验证。
+
+- 2026-11-02：用户补充浏览器通过同一外网域名可正常登录后，重新核对线上 0.1.13 的 login/handoff 来源行为。空 JSON、相同 Origin 下，Dart 风格请求返回来源拒绝 403；仅增加 `Sec-Fetch-Site: same-origin` 即进入参数校验返回 422，单独替换浏览器 User-Agent 或增加 Referer 仍为 403。由此确认存在 Fetch Metadata 相关的来源处理差异，不能依据此前 403 直接认定 PUBLIC_URL 配错；确切中间件实现仍需线上版本源码核对。更正尚未发布的客户端错误提示，不再直接要求修改 PUBLIC_URL，改为提示核对原生接入来源规则；诊断请求不带真实账号/凭据，客户端不伪造 Sec-Fetch-Site、不移除 Origin，线上配置未改。验证：格式化与差异检查通过；未运行测试/analyze、未打包。
+
+- 2026-11-02：排查外网搜歌“无法验证 Music Ext 登录”截图。Zmusic 默认地址仍为 `https://fnext.zuitimes.com` 且配置入口保持隐藏；公开 bootstrap 返回线上版本 `0.1.13`、已配置 Navidrome。使用无账号/凭据的空 JSON 请求核对 handoff：携带该 HTTPS Origin 返回 `403 {"detail":"不允许跨站请求"}`，未进入账号验证；去掉 Origin 的诊断请求才进入参数校验并返回 422。结合本地服务端中间件，定位为线上公开来源/反向代理配置不匹配；未读取用户密码、未发真实登录、未更改线上配置或移除客户端 Origin。客户端 handoff/exchange 统一识别来源拒绝、401、429 和其他 HTTP 状态，提示 PUBLIC_URL/代理排查方向并记录安全错误消息，不记录响应正文、票据或凭据。验证：Dart 格式化、人工检查分支与 `git diff --check` 通过；按普通修改规则未新增/运行测试、未运行 analyze、未打包，已发布的 1.1.6+35 不变。当前 `D:\work\D\music_ext` 仅有 0.1.0 且无 Git 仓库，已询问正在部署的 0.1.13 源码位置，服务端实际修复仍待当前版本/部署配置。
 
 - 2026-11-02：完成 `1.1.6+35` 五端正式发布；标签 `v1.1.6` 指向 `a72d5d699e284a50774509ac57ca97e60d27374b`，第二轮 GitHub Actions `41391679591` 的 Windows、Android、DiLink、macOS、iOS 和最终 Release 六项全部成功，地址 `https://github.com/zlcece/zmiusc/releases/tag/v1.1.6`。下载最终五个 Release 资产覆盖本地 dist 后验证：Windows 安装器 `1.1.6.35`、内嵌 runner `1.1.6+35`，包含 WebView DLL、不携带 userdata；macOS DMG 完整且 Info.plist 为 `1.1.6/35`；iOS IPA 完整且版本为 `1.1.6/35`、保留音频后台模式、仍未签名。Android 两包均为 `1.1.6/versionCode 35`、minSdk 24、双 ARM ABI、JNI 压缩和 16KB zipalign 通过，通用 target 36/V2、DiLink target 29/V1-only，证书 SHA256 均为 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。最终文件大小/SHA256：Windows `17,053,289` / `42412F565FC2A6287B07A13E04DF497D2CAD062B8353421499DFA390E36D2E8A`；Android `24,402,657` / `62094819E9C27F8219B236FEE6FB32DC66CC8B8ACB122F5DB0752CDDE9B49798`；DiLink `24,394,447` / `46CE502698BC8FD368A6BD74D32E0CF252755B164D5E0FE33E9CB9B70F66971C`；macOS `33,325,630` / `238D9BC1C760D98A2060D4AE14656F2A4266F9EC92D9EF2D6CF7DB3BBE4FA980`；iOS `11,282,256` / `2D1684BA66FAE6FDA6062E5165CB9BAEF257801034B2057D4EBEEE87EDD626F9`，均与 GitHub Asset digest 一致。根据上述文件生成并复核 `dist/update.json` 五个平台节点、双下载地址、分平台说明、大小、MD5/SHA256，清单 SHA256 为 `3BD87BAEF90FB409EFC081632A0DC6E20D8DEF9F0BFA69DCFEBC392DB88FFB66`。验证日志/报告位于 `build/release-1.1.6`；未启动新包影响用户正在运行的客户端，未进行真机安装或真实账号上传联调。GitHub 发布完成，文件服务器的安装包与 `/zmusic/0/update.json` 尚需同步，本轮未上传该服务器；macOS 仍为临时签名未公证，iOS 仍需自行签名。
 

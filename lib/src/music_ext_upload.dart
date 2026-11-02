@@ -103,7 +103,6 @@ class MusicExtUploadClient {
       ..headers.addAll({
         'Cookie': 'music_ext_session=${session.cookie}',
         'X-CSRF-Token': session.csrf,
-        'Origin': session.baseUri.origin,
         'Content-Type': file == null
             ? 'application/json'
             : 'application/octet-stream',
@@ -302,7 +301,6 @@ class MusicExtUploadClient {
                 ..headers.addAll({
                   'Cookie': 'music_ext_session=${session.cookie}',
                   'X-CSRF-Token': session.csrf,
-                  'Origin': session.baseUri.origin,
                   'Content-Type': 'application/json',
                 })
                 ..body = '{}';

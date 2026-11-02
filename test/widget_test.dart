@@ -168,7 +168,7 @@ void main() {
     appName: 'Zmusic',
     packageName: 'com.zmusic.app',
     version: '1.1.6',
-    buildNumber: '35',
+    buildNumber: '36',
     buildSignature: '',
   );
 
@@ -4398,7 +4398,7 @@ plain text
         appName: 'Zmusic',
         packageName: 'com.zmusic.app',
         version: '1.1.6',
-        buildNumber: '35',
+        buildNumber: '36',
         buildSignature: '',
       );
     });
