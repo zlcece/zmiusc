@@ -2,6 +2,7 @@ const int gb = 1024 * 1024 * 1024;
 const int minCacheSizeBytes = gb ~/ 2;
 const int maxCacheSizeBytes = 10 * gb;
 const int defaultCacheSizeBytes = 2 * gb;
+const String defaultMusicExtUrl = 'https://fnext.zuitimes.com';
 
 enum CloseButtonBehavior { exit, minimizeToTray }
 
@@ -101,6 +102,7 @@ class AiServiceConfig {
 
 class AppSettings {
   const AppSettings({
+    this.musicExtUrl = defaultMusicExtUrl,
     this.cacheDirectory = '',
     this.cacheSizeBytes = defaultCacheSizeBytes,
     this.logoPath = '',
@@ -129,6 +131,7 @@ class AppSettings {
     this.logLevel = AppLogLevel.error,
   });
 
+  final String musicExtUrl;
   final String cacheDirectory;
   final int cacheSizeBytes;
   final String logoPath;
@@ -199,6 +202,9 @@ class AppSettings {
         ? ''
         : enabledAiServiceIds.first;
     return copyWith(
+      musicExtUrl: musicExtUrl.trim().isEmpty
+          ? defaultMusicExtUrl
+          : musicExtUrl.trim(),
       cacheSizeBytes: clampCacheSize(cacheSizeBytes),
       autoPlayDailyRecommendationOnStartup:
           autoPlayDailyRecommendationOnStartup &&
@@ -284,6 +290,7 @@ class AppSettings {
   }
 
   AppSettings copyWith({
+    String? musicExtUrl,
     String? cacheDirectory,
     int? cacheSizeBytes,
     String? logoPath,
@@ -312,6 +319,7 @@ class AppSettings {
     AppLogLevel? logLevel,
   }) {
     return AppSettings(
+      musicExtUrl: musicExtUrl ?? this.musicExtUrl,
       cacheDirectory: cacheDirectory ?? this.cacheDirectory,
       cacheSizeBytes: cacheSizeBytes ?? this.cacheSizeBytes,
       logoPath: logoPath ?? this.logoPath,
@@ -353,6 +361,7 @@ class AppSettings {
 
   Map<String, Object?> toJson() {
     return {
+      'musicExtUrl': musicExtUrl,
       'cacheDirectory': cacheDirectory,
       'cacheSizeBytes': cacheSizeBytes,
       'logoPath': logoPath,
@@ -417,6 +426,7 @@ class AppSettings {
       ];
     }
     return AppSettings(
+      musicExtUrl: _readString(json, 'musicExtUrl'),
       cacheDirectory: _readString(json, 'cacheDirectory'),
       cacheSizeBytes: clampCacheSize(_readInt(json, 'cacheSizeBytes')),
       logoPath: logoPath,

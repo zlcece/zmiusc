@@ -53,7 +53,6 @@ class AiRecommendationClient {
 
   static const Duration _testTimeout = Duration(seconds: 20);
   static const Duration _recommendationTimeout = Duration(seconds: 90);
-  static const int _recommendationMaxOutputTokens = 1024;
 
   final http.Client _httpClient;
   final bool _ownsHttpClient;
@@ -63,7 +62,7 @@ class AiRecommendationClient {
     required AiServiceConfig service,
     required String apiKey,
   }) async {
-    final content = await _request(
+    await _request(
       service: service,
       apiKey: apiKey,
       timeout: _testTimeout,
@@ -71,9 +70,6 @@ class AiRecommendationClient {
         {'role': 'user', 'content': '只回复 OK'},
       ],
     );
-    if (content.trim().isEmpty) {
-      throw const AiRecommendationException('AI 服务未返回内容。');
-    }
   }
 
   Future<List<String>> fetchModels({
@@ -195,6 +191,7 @@ class AiRecommendationClient {
       service: service,
       apiKey: apiKey,
       timeout: _recommendationTimeout,
+      jsonOutput: true,
       messages: [
         const {
           'role': 'system',
@@ -220,7 +217,9 @@ class AiRecommendationClient {
       }
     }
     if (ordered.isEmpty) {
-      throw const AiRecommendationException('AI 服务返回的推荐结果无效。');
+      throw AiRecommendationException(
+        'AI 返回的 ${selectedIds.length} 个编号均未匹配本次 ${limitedCandidates.length} 首候选歌曲。',
+      );
     }
     for (final candidate in limitedCandidates) {
       if (selectedTracks.add(candidate.track)) {
@@ -235,6 +234,7 @@ class AiRecommendationClient {
     required String apiKey,
     required Duration timeout,
     required List<Map<String, String>> messages,
+    bool jsonOutput = false,
   }) async {
     final uri = Uri.tryParse(service.endpoint.trim());
     if (uri == null ||
@@ -248,6 +248,7 @@ class AiRecommendationClient {
     if (apiKey.trim().isEmpty) {
       throw const AiRecommendationException('请填写 API Key。');
     }
+    final isDeepSeek = uri.host.toLowerCase() == 'api.deepseek.com';
     try {
       final response = await _httpClient
           .post(
@@ -260,7 +261,10 @@ class AiRecommendationClient {
             body: jsonEncode({
               'model': service.model.trim(),
               'messages': messages,
-              'max_tokens': _recommendationMaxOutputTokens,
+              // Skip DeepSeek's default thinking for these short requests.
+              if (isDeepSeek) 'thinking': {'type': 'disabled'},
+              if (isDeepSeek && jsonOutput)
+                'response_format': {'type': 'json_object'},
             }),
           )
           .timeout(timeout);
@@ -277,11 +281,26 @@ class AiRecommendationClient {
       if (choices is! List || choices.isEmpty || choices.first is! Map) {
         throw const AiRecommendationException('AI 服务响应缺少结果。');
       }
-      final message = (choices.first as Map)['message'];
+      final choice = choices.first as Map;
+      final message = choice['message'];
       if (message is! Map) {
         throw const AiRecommendationException('AI 服务响应缺少消息内容。');
       }
-      return _readMessageContent(message['content']);
+      if (choice['finish_reason'] == 'length') {
+        throw const AiRecommendationException('AI 响应达到服务端输出或上下文上限，最终答案可能被截断。');
+      }
+      final contentValue = message['content'];
+      final content = contentValue == null
+          ? ''
+          : _readMessageContent(contentValue);
+      if (content.trim().isEmpty) {
+        final reasoning = message['reasoning_content'];
+        if (reasoning is String && reasoning.trim().isNotEmpty) {
+          throw const AiRecommendationException('AI 仅返回思考过程，未返回最终答案。');
+        }
+        throw const AiRecommendationException('AI 服务返回了空的最终答案。');
+      }
+      return content;
     } on TimeoutException {
       throw const AiRecommendationException('AI 服务请求超时，请检查网络后重试。');
     } on AiRecommendationException {
@@ -337,18 +356,26 @@ class AiRecommendationClient {
     final objectStart = normalized.indexOf('{');
     final objectEnd = normalized.lastIndexOf('}');
     if (objectStart < 0 || objectEnd <= objectStart) {
-      throw const AiRecommendationException('AI 服务返回的推荐结果无效。');
+      throw const AiRecommendationException('AI 最终答案中没有完整的推荐 JSON 对象。');
     }
     try {
       final decoded = jsonDecode(
         normalized.substring(objectStart, objectEnd + 1),
       );
       if (decoded is! Map || decoded['selected'] is! List) {
-        throw const AiRecommendationException('AI 服务返回的推荐结果无效。');
+        throw const AiRecommendationException('AI 推荐 JSON 缺少 selected 数组。');
       }
-      return (decoded['selected'] as List).whereType<String>().toList();
+      final selected = decoded['selected'] as List;
+      if (selected.isEmpty) {
+        throw const AiRecommendationException('AI 推荐的 selected 数组为空。');
+      }
+      final ids = selected.whereType<String>().toList();
+      if (ids.isEmpty) {
+        throw const AiRecommendationException('AI 推荐编号必须是候选歌曲的字符串 ID。');
+      }
+      return ids;
     } on FormatException {
-      throw const AiRecommendationException('AI 服务返回的推荐结果无效。');
+      throw const AiRecommendationException('AI 推荐 JSON 无法解析，可能未完整返回。');
     }
   }
 

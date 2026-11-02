@@ -346,13 +346,19 @@ Future<String> resolveAppUpdatePlatformKey() async {
   throw UnsupportedError('当前平台暂不支持应用内更新。');
 }
 
-Future<void> openAndroidUpdateInstaller(File updateFile) async {
+/// Requests the system APK installer; this does not confirm installation.
+///
+/// Returns `permission-requested` when the user still has to allow installing
+/// unknown apps; the install then resumes natively after that screen closes.
+Future<String> openAndroidUpdateInstaller(File updateFile) async {
   if (defaultTargetPlatform != TargetPlatform.android) {
     throw UnsupportedError('当前平台不支持 Android 更新安装。');
   }
-  await _androidTaskChannel.invokeMethod<void>('installUpdate', {
-    'path': updateFile.path,
-  });
+  final status = await _androidTaskChannel.invokeMethod<String>(
+    'installUpdate',
+    {'path': updateFile.path},
+  );
+  return status ?? 'installer-requested';
 }
 
 bool isNewerAppRelease({

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'app_controller.dart';
 import 'models.dart';
+import 'music_ext_upload.dart';
 import 'musicbrainz_metadata.dart';
 
 class MetadataManagerPage extends StatefulWidget {
@@ -26,6 +28,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
   final TextEditingController _pathController = TextEditingController();
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _artistController = TextEditingController();
+  final TextEditingController _albumArtistController = TextEditingController();
   final TextEditingController _albumController = TextEditingController();
   final TextEditingController _genresController = TextEditingController();
   final TextEditingController _yearController = TextEditingController();
@@ -35,6 +38,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
 
   List<String> _audioFiles = const [];
   LocalAudioMetadata? _metadata;
+  OnlineMetadataArtwork? _pendingArtwork;
   OnlineMetadataSource _metadataSource = OnlineMetadataSource.musicBrainz;
   List<OnlineMetadataCandidate> _onlineMetadataResults = const [];
   OnlineMetadataCandidate? _selectedOnlineMetadataResult;
@@ -42,23 +46,48 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
   bool _isScanning = false;
   bool _isReading = false;
   bool _isSaving = false;
+  bool _isFillingOnlineMetadata = false;
   bool _isSearchingOnlineMetadata = false;
   String? _message;
   bool _messageIsError = false;
   int _selectionRequest = 0;
   int _onlineMetadataRequest = 0;
+  bool _albumArtistFollowsArtist = true;
+  ServerConfig? _libraryServer;
+  int _libraryCheckRequest = 0;
+  bool _isCheckingLibrary = false;
+  bool? _libraryExists;
+  MusicExtUploadClient? _uploadClient;
+  DialogRoute<bool>? _uploadConfirmationRoute;
+  late String _musicExtAddress;
+  final Set<String> _uploadedPaths = {};
+  bool _isUploading = false;
+  double? _uploadProgress;
+  String? _uploadStatus;
+  int _uploadRequest = 0;
+
+  bool get _isEditingLocked =>
+      _isSaving || _isUploading || _isFillingOnlineMetadata;
 
   @override
   void initState() {
     super.initState();
     _onlineMetadataService = OnlineMetadataService();
+    _artistController.addListener(_syncAlbumArtist);
+    _libraryServer = widget.controller.selectedServer;
+    _musicExtAddress = widget.controller.settings.musicExtUrl;
+    widget.controller.addListener(_handleLibraryAccountChange);
   }
 
   @override
   void dispose() {
+    _libraryCheckRequest += 1;
+    _closeUploadClient();
+    widget.controller.removeListener(_handleLibraryAccountChange);
     _pathController.dispose();
     _titleController.dispose();
     _artistController.dispose();
+    _albumArtistController.dispose();
     _albumController.dispose();
     _genresController.dispose();
     _yearController.dispose();
@@ -118,13 +147,16 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
           TextField(
             key: const ValueKey('metadata-path-input'),
             controller: _pathController,
+            enabled: !_isEditingLocked,
             onSubmitted: (_) => _loadInputPath(),
             decoration: InputDecoration(
               hintText: '输入文件或文件夹路径',
               isDense: true,
               suffixIcon: IconButton(
                 tooltip: '读取路径',
-                onPressed: _isScanning || _isSaving ? null : _loadInputPath,
+                onPressed: _isScanning || _isEditingLocked
+                    ? null
+                    : _loadInputPath,
                 icon: const Icon(Icons.arrow_forward),
               ),
             ),
@@ -135,7 +167,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
               Expanded(
                 child: TextButton.icon(
                   key: const ValueKey('metadata-pick-file'),
-                  onPressed: _isScanning || _isSaving ? null : _pickFile,
+                  onPressed: _isScanning || _isEditingLocked ? null : _pickFile,
                   icon: const Icon(Icons.audio_file_outlined),
                   label: const Text('选择文件'),
                 ),
@@ -144,7 +176,9 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
               Expanded(
                 child: TextButton.icon(
                   key: const ValueKey('metadata-pick-folder'),
-                  onPressed: _isScanning || _isSaving ? null : _pickFolder,
+                  onPressed: _isScanning || _isEditingLocked
+                      ? null
+                      : _pickFolder,
                   icon: const Icon(Icons.folder_open_outlined),
                   label: const Text('选择文件夹'),
                 ),
@@ -225,7 +259,9 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
             overflow: TextOverflow.ellipsis,
           ),
           trailing: Text(_audioFormat(path)),
-          onTap: _isReading || _isSaving ? null : () => _selectAudioFile(path),
+          onTap: _isReading || _isEditingLocked
+              ? null
+              : () => _selectAudioFile(path),
         );
       },
     );
@@ -251,32 +287,58 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                 const SizedBox(height: 12),
                 const Divider(height: 1),
                 const SizedBox(height: 12),
-                _buildValueField('标题', _titleController),
-                _buildValueField('歌手', _artistController),
-                _buildValueField('专辑', _albumController),
-                _buildValueField('流派', _genresController),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildValueField(
-                        '年份',
-                        _yearController,
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: _buildValueField(
-                        '曲目号',
-                        _trackNumberController,
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                  ],
+                _MetadataFieldRow(
+                  left: _buildValueField(
+                    '标题',
+                    _titleController,
+                    savedValue: metadata.title,
+                  ),
+                  right: _buildValueField(
+                    '歌手',
+                    _artistController,
+                    savedValue: metadata.artist,
+                  ),
+                ),
+                _MetadataFieldRow(
+                  left: _buildValueField(
+                    '专辑',
+                    _albumController,
+                    savedValue: metadata.album,
+                  ),
+                  right: _buildValueField(
+                    '专辑歌手',
+                    _albumArtistController,
+                    savedValue: metadata.albumArtist,
+                    onChanged: (value) => _albumArtistFollowsArtist =
+                        value.trim().isEmpty ||
+                        value.trim() == _artistController.text.trim(),
+                  ),
+                ),
+                _MetadataFieldRow(
+                  left: _buildValueField(
+                    '流派',
+                    _genresController,
+                    savedValue: metadata.genres,
+                  ),
+                  right: _buildValueField(
+                    '年份',
+                    _yearController,
+                    savedValue: metadata.year,
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                _MetadataFieldRow(
+                  left: _buildValueField(
+                    '曲目号',
+                    _trackNumberController,
+                    savedValue: metadata.trackNumber,
+                    keyboardType: TextInputType.number,
+                  ),
                 ),
                 _buildValueField(
                   '歌词',
                   _lyricsController,
+                  savedValue: metadata.lyrics,
                   minLines: 3,
                   maxLines: 6,
                 ),
@@ -305,12 +367,15 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     LocalAudioMetadata metadata,
   ) {
     final writable = canWriteAudioMetadataPath(metadata.path);
+    final uploadUnavailableReason = _uploadUnavailableReason(metadata);
+    final uploadBusy = _isEditingLocked || _isReading || _isScanning;
+    final alreadyUploaded = _uploadedPaths.contains(metadata.path);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           children: [
-            _buildArtwork(metadata.coverUrl, size: 76),
+            _buildCurrentArtwork(metadata),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -332,9 +397,12 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                 ],
               ),
             ),
+            const SizedBox(width: 8),
+            _buildLibraryStatus(context),
+            const SizedBox(width: 8),
             TextButton.icon(
               key: const ValueKey('metadata-save'),
-              onPressed: !writable || _isSaving ? null : _saveMetadata,
+              onPressed: !writable || _isEditingLocked ? null : _saveMetadata,
               icon: _isSaving
                   ? const SizedBox.square(
                       dimension: 18,
@@ -346,11 +414,57 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
           ],
         ),
         const SizedBox(height: 6),
-        SelectableText(
-          metadata.path,
-          maxLines: 2,
-          style: Theme.of(context).textTheme.bodySmall,
+        Row(
+          children: [
+            Expanded(
+              child: SelectableText(
+                metadata.path,
+                maxLines: 2,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            if (alreadyUploaded) ...[
+              const SizedBox(width: 8),
+              const Icon(Icons.check_circle_outline, size: 18),
+              const SizedBox(width: 4),
+              const Text('已上传'),
+            ] else if (_libraryExists != true) ...[
+              const SizedBox(width: 8),
+              Tooltip(
+                message: uploadUnavailableReason ?? '上传至 Music Ext',
+                child: TextButton.icon(
+                  key: const ValueKey('metadata-upload'),
+                  onPressed: uploadBusy || uploadUnavailableReason != null
+                      ? null
+                      : _uploadAudioFile,
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: Text(_isUploading ? '上传中' : '上传'),
+                ),
+              ),
+            ],
+          ],
         ),
+        if (_libraryExists != true &&
+            !alreadyUploaded &&
+            !uploadBusy &&
+            uploadUnavailableReason != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            uploadUnavailableReason,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.outline,
+            ),
+          ),
+        ],
+        if (_isUploading) ...[
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            key: const ValueKey('metadata-upload-progress'),
+            value: _uploadProgress == 1 ? null : _uploadProgress,
+          ),
+          const SizedBox(height: 4),
+          Text(_uploadStatus ?? '正在准备上传…'),
+        ],
         if (!writable) ...[
           const SizedBox(height: 6),
           Text(
@@ -362,17 +476,330 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     );
   }
 
+  List<String> _missingUploadFields(LocalAudioMetadata metadata) => [
+    if (metadata.title.trim().isEmpty) '标题',
+    if (metadata.artist.trim().isEmpty) '歌手',
+    if (metadata.album.trim().isEmpty) '专辑',
+    if (metadata.coverUrl?.trim().isEmpty ?? true) '封面',
+  ];
+
+  String? _uploadUnavailableReason(LocalAudioMetadata metadata) {
+    if (!widget.controller.isAuthenticated) {
+      return '请先登录 Navidrome 后再上传。';
+    }
+    final missingFields = _missingUploadFields(metadata);
+    if (missingFields.isNotEmpty) {
+      return '上传前请补齐并保存：${missingFields.join('、')}。';
+    }
+    if (_isCheckingLibrary) {
+      return '正在检查曲库，请稍候。';
+    }
+    if (_libraryExists == null) {
+      return '曲库状态尚未确认，请先重试检查。';
+    }
+    return null;
+  }
+
+  Widget _buildLibraryStatus(BuildContext context) {
+    if (_isCheckingLibrary) {
+      return const Text('曲库：检查中');
+    }
+    if (_libraryExists == null) {
+      final metadata = _metadata;
+      if (metadata != null &&
+          (_libraryBaseTitle(metadata.title).isEmpty ||
+              metadata.artist.trim().isEmpty)) {
+        return const Tooltip(
+          message: '补齐并保存标题和歌手后才能检查曲库。',
+          child: Text('曲库：标签待补齐'),
+        );
+      }
+      return TextButton(
+        onPressed: _checkLibraryPresence,
+        child: const Text('曲库未确认 · 重试'),
+      );
+    }
+    return Text(
+      _libraryExists! ? '已存在' : '未存在',
+      style: TextStyle(
+        color: _libraryExists!
+            ? Theme.of(context).colorScheme.primary
+            : Theme.of(context).colorScheme.outline,
+      ),
+    );
+  }
+
+  void _handleLibraryAccountChange() {
+    final accountChanged = !identical(
+      _libraryServer,
+      widget.controller.selectedServer,
+    );
+    final address = widget.controller.settings.musicExtUrl;
+    if (accountChanged || address != _musicExtAddress) {
+      final wasUploading = _isUploading;
+      _closeUploadClient();
+      setState(() {
+        _musicExtAddress = address;
+        _uploadedPaths.clear();
+        _isUploading = false;
+        _uploadProgress = null;
+        _uploadStatus = null;
+        if (wasUploading) {
+          _message = '账号或服务地址已变化，上传已停止。保存结果未确认，请检查原 Music Ext 保存目录。';
+          _messageIsError = true;
+        }
+      });
+    }
+    if (accountChanged) {
+      unawaited(_checkLibraryPresence());
+    }
+  }
+
+  void _closeUploadClient() {
+    _uploadRequest += 1;
+    final client = _uploadClient;
+    _uploadClient = null;
+    if (client != null) {
+      unawaited(client.close());
+    }
+    final route = _uploadConfirmationRoute;
+    _uploadConfirmationRoute = null;
+    if (route != null) {
+      scheduleMicrotask(() {
+        if (route.isActive) {
+          route.navigator?.removeRoute(route);
+        }
+      });
+    }
+  }
+
+  bool get _hasUnsavedMetadata {
+    final metadata = _metadata;
+    if (metadata == null) {
+      return false;
+    }
+    // Read-only formats also display a default album artist without editing it.
+    final albumArtist =
+        metadata.albumArtist.trim().isEmpty &&
+            !canWriteAudioMetadataPath(metadata.path)
+        ? metadata.artist
+        : metadata.albumArtist;
+    return _pendingArtwork != null ||
+        _titleController.text != metadata.title ||
+        _artistController.text != metadata.artist ||
+        _albumArtistController.text != albumArtist ||
+        _albumController.text != metadata.album ||
+        _genresController.text != metadata.genres ||
+        _yearController.text != metadata.year ||
+        _trackNumberController.text != metadata.trackNumber ||
+        _lyricsController.text != metadata.lyrics;
+  }
+
+  Future<void> _uploadAudioFile() async {
+    final metadata = _metadata;
+    final server = widget.controller.selectedServer;
+    if (metadata == null ||
+        server == null ||
+        !widget.controller.isAuthenticated ||
+        _isEditingLocked ||
+        _isReading ||
+        _isScanning ||
+        _libraryExists != false ||
+        _isCheckingLibrary ||
+        _uploadedPaths.contains(metadata.path)) {
+      return;
+    }
+    if (_hasUnsavedMetadata) {
+      _showMessage('请先保存红框中的元数据修改，再上传文件。', isError: true);
+      return;
+    }
+    final missingFields = _missingUploadFields(metadata);
+    if (missingFields.isNotEmpty) {
+      _showMessage('上传前请补齐并保存：${missingFields.join('、')}。', isError: true);
+      return;
+    }
+    final client = _uploadClient ??= MusicExtUploadClient(
+      _musicExtAddress,
+      server,
+    );
+    final request = ++_uploadRequest;
+    bool isCurrent() => mounted && request == _uploadRequest;
+    setState(() {
+      _isUploading = true;
+      _uploadProgress = null;
+      _uploadStatus = '正在检查上传权限…';
+      _message = null;
+    });
+    try {
+      var result = await client.upload(
+        File(metadata.path),
+        onProgress: (sent, total) {
+          if (!isCurrent()) {
+            return;
+          }
+          final progress = (sent / total).clamp(0.0, 1.0).toDouble();
+          if (_uploadProgress != null &&
+              (progress * 100).floor() == (_uploadProgress! * 100).floor()) {
+            return;
+          }
+          setState(() {
+            _uploadProgress = progress;
+            _uploadStatus = progress == 1
+                ? '传输完成，正在校验并保存…'
+                : '正在上传 ${(progress * 100).floor()}%';
+          });
+        },
+      );
+      if (!mounted || request != _uploadRequest) {
+        return;
+      }
+      if (result == null) {
+        setState(() => _uploadStatus = '缺少有效歌词，等待确认…');
+        final route = DialogRoute<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('确认保存无歌词文件'),
+            content: Text(
+              client.lyricsConfirmationMessage ?? '未检测到有效的内嵌歌词，仍要保存吗？',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消保存'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('仍然保存'),
+              ),
+            ],
+          ),
+        );
+        _uploadConfirmationRoute = route;
+        final confirmed = await Navigator.of(
+          context,
+          rootNavigator: true,
+        ).push(route);
+        if (identical(_uploadConfirmationRoute, route)) {
+          _uploadConfirmationRoute = null;
+        }
+        if (!isCurrent()) {
+          return;
+        }
+        if (confirmed != true) {
+          await client.cancelPending();
+          if (isCurrent()) {
+            _showMessage('已取消保存。');
+          }
+          return;
+        }
+        setState(() => _uploadStatus = '正在保存文件…');
+        result = await client.confirm();
+      }
+      if (isCurrent()) {
+        final saved = result;
+        setState(() {
+          _uploadedPaths.add(metadata.path);
+          _message = '已上传：${saved.filename}\n保存目录：${saved.directory}';
+          _messageIsError = false;
+        });
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        _showMessage(_errorText(error), isError: true);
+        _closeUploadClient();
+        setState(() {
+          _isUploading = false;
+          _uploadProgress = null;
+          _uploadStatus = null;
+        });
+      }
+    } finally {
+      if (isCurrent()) {
+        setState(() {
+          _isUploading = false;
+          _uploadProgress = null;
+          _uploadStatus = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _checkLibraryPresence() async {
+    final metadata = _metadata;
+    final server = widget.controller.selectedServer;
+    _libraryServer = server;
+    final request = ++_libraryCheckRequest;
+    if (metadata == null) {
+      return;
+    }
+    final query = _libraryBaseTitle(metadata.title);
+    if (!widget.controller.isAuthenticated ||
+        server == null ||
+        server.isLocalFolder ||
+        query.isEmpty ||
+        metadata.artist.trim().isEmpty) {
+      setState(() {
+        _isCheckingLibrary = false;
+        _libraryExists = null;
+      });
+      return;
+    }
+    setState(() {
+      _isCheckingLibrary = true;
+      _libraryExists = null;
+    });
+    try {
+      final exists = await (() async {
+        for (var offset = 0; offset < 500; offset += 100) {
+          final tracks = await widget.controller.searchTracksForSource(
+            server,
+            query,
+            offset: offset,
+            limit: 100,
+          );
+          if (!mounted || request != _libraryCheckRequest) {
+            return null;
+          }
+          if (tracks.any((track) => _librarySongMatches(metadata, track))) {
+            return true;
+          }
+          if (tracks.length < 100) {
+            return false;
+          }
+        }
+        return null;
+      })().timeout(const Duration(seconds: 15));
+      if (mounted && request == _libraryCheckRequest) {
+        setState(() {
+          _libraryExists = exists;
+          _isCheckingLibrary = false;
+        });
+      }
+    } catch (_) {
+      if (mounted && request == _libraryCheckRequest) {
+        _libraryCheckRequest += 1;
+        setState(() {
+          _libraryExists = null;
+          _isCheckingLibrary = false;
+        });
+      }
+    }
+  }
+
   Widget _buildValueField(
     String label,
     TextEditingController controller, {
+    required String savedValue,
     TextInputType? keyboardType,
     int minLines = 1,
     int maxLines = 1,
+    ValueChanged<String>? onChanged,
   }) {
     final editable =
         _metadata != null &&
         canWriteAudioMetadataPath(_metadata!.path) &&
-        !_isSaving;
+        !_isEditingLocked;
     return Padding(
       padding: const EdgeInsets.only(bottom: 9),
       child: Row(
@@ -383,8 +810,10 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
           SizedBox(width: 72, child: Text(label)),
           const SizedBox(width: 10),
           Expanded(
-            child: TextField(
+            child: _MetadataTextField(
               controller: controller,
+              savedValue: savedValue,
+              onChanged: onChanged,
               enabled: editable,
               keyboardType: keyboardType,
               minLines: minLines,
@@ -423,7 +852,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                     key: const ValueKey('metadata-online-source'),
                     value: _metadataSource,
                     underline: const SizedBox.shrink(),
-                    onChanged: _isSearchingOnlineMetadata || _isSaving
+                    onChanged: _isSearchingOnlineMetadata || _isEditingLocked
                         ? null
                         : (source) {
                             if (source == null || source == _metadataSource) {
@@ -448,7 +877,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
             ),
             TextButton.icon(
               key: const ValueKey('metadata-online-search'),
-              onPressed: _isSearchingOnlineMetadata || _isSaving
+              onPressed: _isSearchingOnlineMetadata || _isEditingLocked
                   ? null
                   : _searchOnlineMetadata,
               icon: _isSearchingOnlineMetadata
@@ -483,44 +912,71 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
           const SizedBox(height: 12),
           Text('替换字段', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 4),
-          Wrap(
-            spacing: 12,
-            runSpacing: 2,
-            children: _availableOnlineMetadataFields(selected)
-                .map(
-                  (field) => SizedBox(
-                    width: 140,
-                    child: CheckboxListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      title: Text(_onlineMetadataFieldLabel(field)),
-                      value: _selectedOnlineMetadataFields.contains(field),
-                      onChanged: writable && !_isSaving
-                          ? (value) {
-                              setState(() {
-                                final fields = Set<OnlineMetadataField>.of(
-                                  _selectedOnlineMetadataFields,
-                                );
-                                if (value ?? false) {
-                                  fields.add(field);
-                                } else {
-                                  fields.remove(field);
-                                }
-                                _selectedOnlineMetadataFields = fields;
-                              });
-                            }
-                          : null,
-                    ),
-                  ),
-                )
-                .toList(growable: false),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: _availableOnlineMetadataFields(selected)
+                  .map((field) {
+                    final checked = _selectedOnlineMetadataFields.contains(
+                      field,
+                    );
+                    final enabled = writable && !_isEditingLocked;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: MergeSemantics(
+                        child: InkWell(
+                          onTap: enabled
+                              ? () => _setOnlineMetadataFieldSelected(
+                                  field,
+                                  !checked,
+                                )
+                              : null,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Checkbox(
+                                value: checked,
+                                visualDensity: VisualDensity.compact,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                onChanged: enabled
+                                    ? (value) =>
+                                          _setOnlineMetadataFieldSelected(
+                                            field,
+                                            value ?? false,
+                                          )
+                                    : null,
+                              ),
+                              const SizedBox(width: 2),
+                              Text(
+                                _onlineMetadataFieldLabel(field),
+                                maxLines: 1,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  })
+                  .toList(growable: false),
+            ),
           ),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              if (_isFillingOnlineMetadata) ...[
+                const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                const Text('正在填入封面…'),
+                const SizedBox(width: 12),
+              ],
               TextButton(
-                onPressed: writable && !_isSaving
+                onPressed: writable && !_isEditingLocked
                     ? () => _applyOnlineMetadataFields(
                         Set<OnlineMetadataField>.of(
                           _availableOnlineMetadataFields(selected),
@@ -533,7 +989,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
               FilledButton.tonalIcon(
                 onPressed:
                     writable &&
-                        !_isSaving &&
+                        !_isEditingLocked &&
                         _selectedOnlineMetadataFields.isNotEmpty
                     ? () => _applyOnlineMetadataFields(
                         _selectedOnlineMetadataFields,
@@ -541,15 +997,6 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
                     : null,
                 icon: const Icon(Icons.playlist_add_check_outlined),
                 label: const Text('填入选中字段'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                key: const ValueKey('metadata-online-replace'),
-                onPressed: writable && !_isSaving
-                    ? _confirmAndReplaceOnlineMetadata
-                    : null,
-                icon: const Icon(Icons.find_replace_outlined),
-                label: const Text('一键替换'),
               ),
             ],
           ),
@@ -571,7 +1018,9 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
       if (candidate.year.isNotEmpty) candidate.year,
     ].join(' · ');
     return InkWell(
-      onTap: () => _selectOnlineMetadataResult(candidate),
+      onTap: _isEditingLocked
+          ? null
+          : () => _selectOnlineMetadataResult(candidate),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Row(
@@ -641,6 +1090,35 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     );
   }
 
+  Widget _buildCurrentArtwork(LocalAudioMetadata metadata) {
+    final pending = _pendingArtwork;
+    if (pending == null) {
+      return _buildArtwork(metadata.coverUrl, size: 76);
+    }
+    return Tooltip(
+      message: '封面有未保存的修改',
+      child: DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: Theme.of(context).colorScheme.error,
+            width: 2,
+          ),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: Image.memory(
+            pending.bytes,
+            width: 76,
+            height: 76,
+            fit: BoxFit.cover,
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _pickFile() async {
     final file = await openFile(acceptedTypeGroups: [_audioTypeGroup()]);
     if (file == null) {
@@ -670,7 +1148,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
   }
 
   Future<void> _loadInputPath() async {
-    if (_isScanning || _isSaving) {
+    if (_isScanning || _isEditingLocked) {
       return;
     }
     final path = _cleanInputPath(_pathController.text);
@@ -730,6 +1208,9 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
   }
 
   Future<void> _selectAudioFile(String path) async {
+    if (_isEditingLocked) {
+      return;
+    }
     final request = ++_selectionRequest;
     setState(() {
       _isReading = true;
@@ -755,7 +1236,7 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
 
   Future<void> _saveMetadata() async {
     final metadata = _metadata;
-    if (metadata == null || _isSaving) {
+    if (metadata == null || _isEditingLocked) {
       return;
     }
     setState(() {
@@ -767,17 +1248,21 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
         metadata.copyWith(
           title: _titleController.text.trim(),
           artist: _artistController.text.trim(),
+          albumArtist: _albumArtistController.text.trim(),
           album: _albumController.text.trim(),
           genres: _genresController.text.trim(),
           year: _yearController.text.trim(),
           trackNumber: _trackNumberController.text.trim(),
           lyrics: _lyricsController.text,
         ),
+        artworkBytes: _pendingArtwork?.bytes,
+        artworkMimeType: _pendingArtwork?.mimeType,
       );
       if (!mounted) {
         return;
       }
       setState(() {
+        _uploadedPaths.remove(updated.path);
         _setMetadata(updated);
         _message = '元数据已保存。';
         _messageIsError = false;
@@ -794,6 +1279,9 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
   }
 
   Future<void> _searchOnlineMetadata() async {
+    if (_isEditingLocked) {
+      return;
+    }
     setState(() {
       _message = null;
       _clearOnlineMetadataResults();
@@ -841,11 +1329,35 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
     );
   }
 
-  void _applyOnlineMetadataFields(Set<OnlineMetadataField> fields) {
-    final candidate = _selectedOnlineMetadataResult;
-    if (candidate == null) {
+  void _setOnlineMetadataFieldSelected(
+    OnlineMetadataField field,
+    bool selected,
+  ) {
+    setState(() {
+      final fields = Set<OnlineMetadataField>.of(_selectedOnlineMetadataFields);
+      if (selected) {
+        fields.add(field);
+      } else {
+        fields.remove(field);
+      }
+      _selectedOnlineMetadataFields = fields;
+    });
+  }
+
+  Future<void> _applyOnlineMetadataFields(
+    Set<OnlineMetadataField> fields,
+  ) async {
+    if (_isEditingLocked || _isReading || _isScanning) {
       return;
     }
+    final candidate = _selectedOnlineMetadataResult;
+    final metadata = _metadata;
+    if (candidate == null ||
+        metadata == null ||
+        !canWriteAudioMetadataPath(metadata.path)) {
+      return;
+    }
+    final selectionRequest = _selectionRequest;
     for (final field in fields) {
       final value = candidate.valueFor(field);
       if (value.isEmpty) {
@@ -864,112 +1376,57 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
           _yearController.text = value;
         case OnlineMetadataField.trackNumber:
           _trackNumberController.text = value;
+        case OnlineMetadataField.artwork:
+          // Load the selected cover after filling the text fields.
+          break;
       }
     }
-    _showMessage('已填入${candidate.source.label}数据，保存后写入文件。');
-  }
-
-  Future<void> _confirmAndReplaceOnlineMetadata() async {
-    final candidate = _selectedOnlineMetadataResult;
-    final metadata = _metadata;
-    if (candidate == null || metadata == null || _isSaving) {
+    if (!fields.contains(OnlineMetadataField.artwork) ||
+        candidate.artworkUrl.trim().isEmpty) {
+      _showMessage('已填入${candidate.source.label}数据，保存后写入文件。');
       return;
     }
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('替换歌曲元数据'),
-        content: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildArtwork(candidate.artworkUrl, size: 72),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    candidate.title,
-                    style: Theme.of(dialogContext).textTheme.titleMedium,
-                  ),
-                  if (candidate.artist.isNotEmpty) Text(candidate.artist),
-                  if (candidate.album.isNotEmpty) Text(candidate.album),
-                  const SizedBox(height: 10),
-                  Text(
-                    candidate.artworkUrl.isEmpty
-                        ? '确认后将直接写入可用字段；当前来源没有返回专辑封面。'
-                        : '确认后将直接写入可用字段和专辑封面。',
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('确认替换'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) {
-      return;
-    }
-
     setState(() {
-      _isSaving = true;
+      _isFillingOnlineMetadata = true;
       _message = null;
     });
     try {
-      OnlineMetadataArtwork? artwork;
-      String? artworkWarning;
-      if (candidate.artworkUrl.isNotEmpty) {
-        try {
-          artwork = await _onlineMetadataService.downloadArtwork(
-            candidate.artworkUrl,
-          );
-        } catch (error) {
-          artworkWarning = _errorText(error);
-        }
-      }
-      final updated = await widget.controller.saveAudioMetadata(
-        metadata.copyWith(
-          title: _replacementValue(candidate.title, metadata.title),
-          artist: _replacementValue(candidate.artist, metadata.artist),
-          album: _replacementValue(candidate.album, metadata.album),
-          genres: _replacementValue(candidate.genres, metadata.genres),
-          year: _replacementValue(candidate.year, metadata.year),
-          trackNumber: _replacementValue(
-            candidate.trackNumber,
-            metadata.trackNumber,
-          ),
-        ),
-        artworkBytes: artwork?.bytes,
-        artworkMimeType: artwork?.mimeType,
+      final artwork = await _onlineMetadataService.downloadArtwork(
+        candidate.artworkUrl,
       );
-      if (!mounted) {
+      if (!mounted || selectionRequest != _selectionRequest) {
         return;
       }
-      setState(() {
-        _setMetadata(updated);
-        _message = artworkWarning == null
-            ? '${candidate.source.label}元数据已写入文件。'
-            : '${candidate.source.label}字段已写入，$artworkWarning';
-        _messageIsError = artworkWarning != null;
-      });
+      if (artwork == null) {
+        throw Exception('封面地址无效。');
+      }
+      var artworkChanged = true;
+      try {
+        final savedFile = await widget.controller.artworkCacheManager
+            .cacheArtwork(metadata.coverUrl);
+        final savedBytes = await savedFile?.readAsBytes();
+        final replacementBytes = artwork.bytes;
+        artworkChanged =
+            savedBytes == null ||
+            savedBytes.length != replacementBytes.length ||
+            savedBytes.indexed.any(
+              (entry) => entry.$2 != replacementBytes[entry.$1],
+            );
+      } catch (_) {
+        // Keep a visible pending change if the saved cover cannot be compared.
+      }
+      if (!mounted || selectionRequest != _selectionRequest) {
+        return;
+      }
+      setState(() => _pendingArtwork = artworkChanged ? artwork : null);
+      _showMessage('已填入${candidate.source.label}数据及封面，保存后写入文件。');
     } catch (error) {
-      if (mounted) {
-        _showMessage(_errorText(error), isError: true);
+      if (mounted && selectionRequest == _selectionRequest) {
+        _showMessage('封面未填入：${_errorText(error)}', isError: true);
       }
     } finally {
       if (mounted) {
-        setState(() => _isSaving = false);
+        setState(() => _isFillingOnlineMetadata = false);
       }
     }
   }
@@ -984,13 +1441,32 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
 
   void _setMetadata(LocalAudioMetadata metadata) {
     _metadata = metadata;
+    _pendingArtwork = null;
+    _setEditingValues(metadata);
+    unawaited(_checkLibraryPresence());
+  }
+
+  void _setEditingValues(LocalAudioMetadata metadata) {
     _titleController.text = metadata.title;
+    _albumArtistFollowsArtist = false;
     _artistController.text = metadata.artist;
+    _albumArtistFollowsArtist =
+        metadata.albumArtist.trim().isEmpty ||
+        metadata.albumArtist.trim() == metadata.artist.trim();
+    _albumArtistController.text = metadata.albumArtist.trim().isEmpty
+        ? metadata.artist
+        : metadata.albumArtist;
     _albumController.text = metadata.album;
     _genresController.text = metadata.genres;
     _yearController.text = metadata.year;
     _trackNumberController.text = metadata.trackNumber;
     _lyricsController.text = metadata.lyrics;
+  }
+
+  void _syncAlbumArtist() {
+    if (_albumArtistFollowsArtist) {
+      _albumArtistController.text = _artistController.text;
+    }
   }
 
   void _clearOnlineMetadataResults() {
@@ -1009,6 +1485,85 @@ class _MetadataManagerPageState extends State<MetadataManagerPage> {
       _message = message;
       _messageIsError = isError;
     });
+  }
+}
+
+class _MetadataTextField extends StatelessWidget {
+  const _MetadataTextField({
+    required this.controller,
+    required this.savedValue,
+    required this.decoration,
+    this.enabled = true,
+    this.keyboardType,
+    this.minLines = 1,
+    this.maxLines = 1,
+    this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String savedValue;
+  final InputDecoration decoration;
+  final bool enabled;
+  final TextInputType? keyboardType;
+  final int minLines;
+  final int maxLines;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (context, value, _) {
+        final changed = value.text != savedValue;
+        final border = OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: BorderSide(
+            color: Theme.of(context).colorScheme.error,
+            width: 1.5,
+          ),
+        );
+        return Tooltip(
+          message: changed ? '有未保存的修改' : '',
+          child: TextField(
+            controller: controller,
+            enabled: enabled,
+            keyboardType: keyboardType,
+            minLines: minLines,
+            maxLines: maxLines,
+            onChanged: onChanged,
+            decoration: changed
+                ? decoration.copyWith(
+                    border: border,
+                    enabledBorder: border,
+                    focusedBorder: border,
+                    disabledBorder: border,
+                    errorBorder: border,
+                    focusedErrorBorder: border,
+                  )
+                : decoration,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _MetadataFieldRow extends StatelessWidget {
+  const _MetadataFieldRow({required this.left, this.right});
+
+  final Widget left;
+  final Widget? right;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: left),
+        const SizedBox(width: 16),
+        Expanded(child: right ?? const SizedBox.shrink()),
+      ],
+    );
   }
 }
 
@@ -1066,11 +1621,6 @@ String _audioFormat(String path) {
   return dot < 0 ? '' : name.substring(dot + 1).toUpperCase();
 }
 
-String _replacementValue(String candidate, String current) {
-  final value = candidate.trim();
-  return value.isEmpty ? current : value;
-}
-
 String _onlineMetadataFieldLabel(OnlineMetadataField field) {
   return switch (field) {
     OnlineMetadataField.title => '标题',
@@ -1079,6 +1629,7 @@ String _onlineMetadataFieldLabel(OnlineMetadataField field) {
     OnlineMetadataField.genres => '流派',
     OnlineMetadataField.year => '年份',
     OnlineMetadataField.trackNumber => '曲目号',
+    OnlineMetadataField.artwork => '封面',
   };
 }
 
@@ -1111,6 +1662,7 @@ class _MetadataAdminDialog extends StatefulWidget {
 class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _artistController = TextEditingController();
+  final TextEditingController _albumArtistController = TextEditingController();
   final TextEditingController _albumController = TextEditingController();
   final TextEditingController _genresController = TextEditingController();
   final TextEditingController _yearController = TextEditingController();
@@ -1120,10 +1672,12 @@ class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
   LocalAudioMetadata? _metadata;
   String? _message;
   bool _isBusy = false;
+  bool _albumArtistFollowsArtist = true;
 
   @override
   void initState() {
     super.initState();
+    _artistController.addListener(_syncAlbumArtist);
     final initialPath = widget.initialPath;
     if (initialPath != null && initialPath.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1138,6 +1692,7 @@ class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
   void dispose() {
     _titleController.dispose();
     _artistController.dispose();
+    _albumArtistController.dispose();
     _albumController.dispose();
     _genresController.dispose();
     _yearController.dispose();
@@ -1191,43 +1746,72 @@ class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
               ],
               if (metadata != null) ...[
                 const SizedBox(height: 20),
-                TextField(
-                  controller: _titleController,
-                  decoration: const InputDecoration(labelText: '标题'),
+                _MetadataFieldRow(
+                  left: _MetadataTextField(
+                    controller: _titleController,
+                    savedValue: metadata.title,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '标题'),
+                  ),
+                  right: _MetadataTextField(
+                    controller: _artistController,
+                    savedValue: metadata.artist,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '歌手'),
+                  ),
                 ),
-                TextField(
-                  controller: _artistController,
-                  decoration: const InputDecoration(labelText: '歌手'),
+                _MetadataFieldRow(
+                  left: _MetadataTextField(
+                    controller: _albumController,
+                    savedValue: metadata.album,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '专辑'),
+                  ),
+                  right: _MetadataTextField(
+                    controller: _albumArtistController,
+                    savedValue: metadata.albumArtist,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '专辑歌手'),
+                    onChanged: (value) => _albumArtistFollowsArtist =
+                        value.trim().isEmpty ||
+                        value.trim() == _artistController.text.trim(),
+                  ),
                 ),
-                TextField(
-                  controller: _albumController,
-                  decoration: const InputDecoration(labelText: '专辑'),
+                _MetadataFieldRow(
+                  left: _MetadataTextField(
+                    controller: _genresController,
+                    savedValue: metadata.genres,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '流派（用逗号分隔）'),
+                  ),
+                  right: _MetadataTextField(
+                    controller: _yearController,
+                    savedValue: metadata.year,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '年份'),
+                    keyboardType: TextInputType.number,
+                  ),
                 ),
-                TextField(
-                  controller: _genresController,
-                  decoration: const InputDecoration(labelText: '流派（用逗号分隔）'),
+                _MetadataFieldRow(
+                  left: _MetadataTextField(
+                    controller: _trackNumberController,
+                    savedValue: metadata.trackNumber,
+                    enabled:
+                        !_isBusy && canWriteAudioMetadataPath(metadata.path),
+                    decoration: const InputDecoration(labelText: '曲目号'),
+                    keyboardType: TextInputType.number,
+                  ),
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _yearController,
-                        decoration: const InputDecoration(labelText: '年份'),
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextField(
-                        controller: _trackNumberController,
-                        decoration: const InputDecoration(labelText: '曲目号'),
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                  ],
-                ),
-                TextField(
+                _MetadataTextField(
                   controller: _lyricsController,
+                  savedValue: metadata.lyrics,
+                  enabled: !_isBusy && canWriteAudioMetadataPath(metadata.path),
                   decoration: const InputDecoration(labelText: '歌词'),
                   minLines: 3,
                   maxLines: 6,
@@ -1293,6 +1877,7 @@ class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
         metadata.copyWith(
           title: _titleController.text,
           artist: _artistController.text,
+          albumArtist: _albumArtistController.text,
           album: _albumController.text,
           genres: _genresController.text,
           year: _yearController.text,
@@ -1315,6 +1900,7 @@ class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
       final updated = metadata.copyWith(
         title: _titleController.text,
         artist: _artistController.text,
+        albumArtist: _albumArtistController.text,
         album: _albumController.text,
         genres: _genresController.text,
         year: _yearController.text,
@@ -1345,12 +1931,25 @@ class _MetadataAdminDialogState extends State<_MetadataAdminDialog> {
   void _setMetadata(LocalAudioMetadata metadata) {
     _metadata = metadata;
     _titleController.text = metadata.title;
+    _albumArtistFollowsArtist = false;
     _artistController.text = metadata.artist;
+    _albumArtistFollowsArtist =
+        metadata.albumArtist.trim().isEmpty ||
+        metadata.albumArtist.trim() == metadata.artist.trim();
+    _albumArtistController.text = metadata.albumArtist.trim().isEmpty
+        ? metadata.artist
+        : metadata.albumArtist;
     _albumController.text = metadata.album;
     _genresController.text = metadata.genres;
     _yearController.text = metadata.year;
     _trackNumberController.text = metadata.trackNumber;
     _lyricsController.text = metadata.lyrics;
+  }
+
+  void _syncAlbumArtist() {
+    if (_albumArtistFollowsArtist) {
+      _albumArtistController.text = _artistController.text;
+    }
   }
 }
 
@@ -1364,4 +1963,61 @@ String _formatDuration(Duration? value) {
     return '${value.inHours}:$minutes:$seconds';
   }
   return '$minutes:$seconds';
+}
+
+final _libraryVersionMarker = RegExp(
+  r'\b(?:live|remaster(?:ed)?|remix|version|ver|instrumental|acoustic|demo)\b|伴奏|现场|演唱会|重制|重录|混音|版',
+  caseSensitive: false,
+);
+
+String _libraryBaseTitle(String value) {
+  final title = _libraryWidthNormalized(value).replaceAllMapped(
+    RegExp(r'\([^()]*\)|\[[^\[\]]*\]|【[^【】]*】'),
+    (match) => _libraryVersionMarker.hasMatch(match[0]!) ? '' : match[0]!,
+  );
+  return title
+      .replaceFirstMapped(
+        RegExp(r'\s+[-–—]\s+(.+)$'),
+        (match) => _libraryVersionMarker.hasMatch(match[1]!) ? '' : match[0]!,
+      )
+      .trim();
+}
+
+String _libraryWidthNormalized(String value) {
+  return String.fromCharCodes(
+    value.runes.map((rune) {
+      if (rune >= 0xff01 && rune <= 0xff5e) {
+        return rune - 0xfee0;
+      }
+      return rune == 0x3000 ? 0x20 : rune;
+    }),
+  );
+}
+
+String _libraryTextKey(String value) =>
+    _libraryWidthNormalized(value).toLowerCase().replaceAll(RegExp(r'\s+'), '');
+
+bool _librarySongMatches(LocalAudioMetadata metadata, Track track) {
+  final title = _libraryTextKey(_libraryBaseTitle(metadata.title));
+  if (title.isEmpty ||
+      title != _libraryTextKey(_libraryBaseTitle(track.title))) {
+    return false;
+  }
+  final artist = _libraryTextKey(metadata.artist);
+  if (artist.isEmpty) {
+    return false;
+  }
+  if (artist == _libraryTextKey(track.artist)) {
+    return true;
+  }
+  Set<String> artists(String value) => _libraryWidthNormalized(value)
+      .split(RegExp(r'[/、,，;&；]'))
+      .map(_libraryTextKey)
+      .where((name) => name.isNotEmpty)
+      .toSet();
+  final left = artists(metadata.artist);
+  final right = artists(track.artist);
+  return left.isNotEmpty &&
+      left.length == right.length &&
+      left.containsAll(right);
 }

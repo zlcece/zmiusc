@@ -20,6 +20,7 @@ import 'compact_switch.dart';
 import 'lyrics_timeline.dart';
 import 'metadata_admin.dart';
 import 'models.dart';
+import 'music_ext_page.dart';
 import 'playlist_tools_page.dart';
 import 'settings_models.dart';
 
@@ -4096,12 +4097,22 @@ Future<void> _openAppUpdateDownload({
       },
     );
     if (defaultTargetPlatform == TargetPlatform.android) {
-      await openAndroidUpdateInstaller(installer);
+      final status = await openAndroidUpdateInstaller(installer);
+      final awaitingPermission = status == 'permission-requested';
+      AppLogger.instance.info(
+        'update',
+        awaitingPermission ? '更新包已下载，等待安装未知应用授权' : '更新包已下载，已请求系统安装程序',
+      );
       if (dialogContext.mounted) {
         Navigator.of(dialogContext).pop();
       }
       if (pageContext.mounted) {
-        _showSourceMessage(pageContext, '更新包已下载，已打开系统安装程序。');
+        _showSourceMessage(
+          pageContext,
+          awaitingPermission
+              ? '请在系统设置中允许 Zmusic 安装未知应用，返回后会自动继续安装。'
+              : '更新包已下载，请在系统安装界面确认安装。',
+        );
       }
       return;
     }
@@ -4116,14 +4127,20 @@ Future<void> _openAppUpdateDownload({
     if (pageContext.mounted) {
       _showSourceMessage(pageContext, '更新安装器已下载并启动。');
     }
-  } catch (error) {
+  } catch (error, stackTrace) {
+    AppLogger.instance.error(
+      'update',
+      '应用更新失败',
+      error: error,
+      stackTrace: stackTrace,
+    );
     if (dialogContext.mounted) {
       setDialogState(() {
         setDownloading(false);
-        setError('下载更新失败：${_formatError(error)}');
+        setError('更新失败：${_formatError(error)}');
       });
     } else if (pageContext.mounted) {
-      _showSourceMessage(pageContext, '下载更新失败：${_formatError(error)}');
+      _showSourceMessage(pageContext, '更新失败：${_formatError(error)}');
     }
   }
 }
@@ -5416,6 +5433,7 @@ class _LibraryHome extends StatelessWidget {
                     child: KeyedSubtree(
                       key: const ValueKey('home-search-bar'),
                       child: _LibrarySearchBar(
+                        musicExtController: controller,
                         controller: searchController,
                         scope: searchScope,
                         isBusy: controller.isBusy,
@@ -6220,6 +6238,7 @@ class _SearchResultsPage extends StatelessWidget {
                     child: KeyedSubtree(
                       key: const ValueKey('search-results-search-bar'),
                       child: _LibrarySearchBar(
+                        musicExtController: controller,
                         controller: searchController,
                         scope: searchScope,
                         isBusy: controller.isBusy,
@@ -6527,6 +6546,7 @@ IconData _remoteSearchSuggestionIcon(LibrarySearchScope scope) {
 
 class _LibrarySearchBar extends StatefulWidget {
   const _LibrarySearchBar({
+    this.musicExtController,
     required this.controller,
     required this.scope,
     required this.isBusy,
@@ -6536,6 +6556,7 @@ class _LibrarySearchBar extends StatefulWidget {
     required this.onSuggestionSelected,
   });
 
+  final AppController? musicExtController;
   final TextEditingController controller;
   final LibrarySearchScope scope;
   final bool isBusy;
@@ -6553,6 +6574,30 @@ class _LibrarySearchBar extends StatefulWidget {
 }
 
 class _LibrarySearchBarState extends State<_LibrarySearchBar> {
+  bool get _showMusicExt =>
+      defaultTargetPlatform == TargetPlatform.windows &&
+      widget.musicExtController?.settings.musicExtUrl.isNotEmpty == true;
+
+  void _openMusicExt() {
+    final controller = widget.musicExtController;
+    if (!_showMusicExt ||
+        controller == null ||
+        controller.selectedServer == null ||
+        controller.settings.musicExtUrl.isEmpty) {
+      return;
+    }
+    _cancelSuggestionRequest();
+    _focusNode.unfocus();
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => MusicExtPage(
+          controller: controller,
+          keyword: widget.controller.text.trim(),
+        ),
+      ),
+    );
+  }
+
   final FocusNode _focusNode = FocusNode();
   final MenuController _suggestionMenuController = MenuController();
   final GlobalKey _searchLeadingKey = GlobalKey();
@@ -6826,7 +6871,7 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
   @override
   Widget build(BuildContext context) {
     final compact = _isPhoneWidth(context);
-    return _GlassSurface(
+    final searchField = _GlassSurface(
       darkAlpha: 0.16,
       child: Row(
         children: [
@@ -6906,7 +6951,7 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
                           builder: (context, value, child) {
                             final hasText = value.text.isNotEmpty;
                             return SizedBox(
-                              width: hasText ? 96 : 48,
+                              width: hasText ? 96.0 : 48.0,
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.end,
                                 mainAxisSize: MainAxisSize.min,
@@ -6942,6 +6987,22 @@ class _LibrarySearchBarState extends State<_LibrarySearchBar> {
           ),
         ],
       ),
+    );
+    if (!_showMusicExt) {
+      return searchField;
+    }
+    return Row(
+      children: [
+        Expanded(child: searchField),
+        const SizedBox(width: 8),
+        IconButton(
+          tooltip: '外网搜歌',
+          constraints: const BoxConstraints.tightFor(width: 40, height: 44),
+          padding: EdgeInsets.zero,
+          onPressed: _openMusicExt,
+          icon: const Icon(Icons.travel_explore),
+        ),
+      ],
     );
   }
 }

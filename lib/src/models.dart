@@ -201,6 +201,7 @@ class LocalAudioMetadata {
     required this.year,
     required this.trackNumber,
     required this.lyrics,
+    this.albumArtist = '',
     this.duration,
     this.coverUrl,
   });
@@ -208,6 +209,7 @@ class LocalAudioMetadata {
   final String path;
   final String title;
   final String artist;
+  final String albumArtist;
   final String album;
   final String genres;
   final String year;
@@ -219,6 +221,7 @@ class LocalAudioMetadata {
   LocalAudioMetadata copyWith({
     String? title,
     String? artist,
+    String? albumArtist,
     String? album,
     String? genres,
     String? year,
@@ -231,6 +234,7 @@ class LocalAudioMetadata {
       path: path,
       title: title ?? this.title,
       artist: artist ?? this.artist,
+      albumArtist: albumArtist ?? this.albumArtist,
       album: album ?? this.album,
       genres: genres ?? this.genres,
       year: year ?? this.year,

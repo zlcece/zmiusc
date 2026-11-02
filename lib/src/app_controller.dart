@@ -1255,7 +1255,7 @@ class AppController extends ChangeNotifier {
         }
         AppLogger.instance.info(
           'ai-recommendation',
-          '$purposeLabel AI 排序完成：服务 ${service.name}，'
+          '$purposeLabel AI 排序完成：服务 ${service.name}（模型 ${service.model}），'
               '候选 ${candidates.length} 首，'
               '耗时 ${stopwatch.elapsedMilliseconds} 毫秒',
         );
@@ -1263,14 +1263,14 @@ class AppController extends ChangeNotifier {
       } on AiRecommendationException catch (error) {
         AppLogger.instance.warning(
           'ai-recommendation',
-          '$purposeLabel AI 服务 ${service.name} 失败，'
+          '$purposeLabel AI 服务 ${service.name}（模型 ${service.model}）失败，'
               '${hasNext ? '正在尝试下一个服务' : '已使用本地推荐'}：'
               '${error.message}',
         );
       } catch (_) {
         AppLogger.instance.warning(
           'ai-recommendation',
-          '$purposeLabel AI 服务 ${service.name} 异常，'
+          '$purposeLabel AI 服务 ${service.name}（模型 ${service.model}）异常，'
               '${hasNext ? '正在尝试下一个服务' : '已使用本地推荐'}',
         );
       }
@@ -2484,6 +2484,7 @@ class AppController extends ChangeNotifier {
       path: path,
       title: metadata.title ?? fileNameWithoutExtension(path),
       artist: metadata.artist ?? '',
+      albumArtist: metadata.albumArtist ?? '',
       album: metadata.album ?? '',
       genres: metadata.genres.join(', '),
       year: metadata.year?.year.toString() ?? '',
@@ -2724,6 +2725,11 @@ class AppController extends ChangeNotifier {
       metadata
         ..setTitle(_emptyToNull(value.title))
         ..setArtist(_emptyToNull(value.artist))
+        ..setAlbumArtist(
+          _emptyToNull(
+            value.albumArtist.trim().isEmpty ? value.artist : value.albumArtist,
+          ),
+        )
         ..setAlbum(_emptyToNull(value.album))
         ..setYear(_yearFromString(value.year))
         ..setTrackNumber(_intFromString(value.trackNumber))

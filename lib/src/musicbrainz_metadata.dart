@@ -15,7 +15,15 @@ extension OnlineMetadataSourceLabel on OnlineMetadataSource {
   };
 }
 
-enum OnlineMetadataField { title, artist, album, genres, year, trackNumber }
+enum OnlineMetadataField {
+  title,
+  artist,
+  album,
+  genres,
+  year,
+  trackNumber,
+  artwork,
+}
 
 class OnlineMetadataCandidate {
   const OnlineMetadataCandidate({
@@ -50,6 +58,7 @@ class OnlineMetadataCandidate {
       OnlineMetadataField.genres => genres,
       OnlineMetadataField.year => year,
       OnlineMetadataField.trackNumber => trackNumber,
+      OnlineMetadataField.artwork => artworkUrl,
     };
   }
 }
