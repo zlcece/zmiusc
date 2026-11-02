@@ -109,7 +109,7 @@
 ## 打包记忆
 
 - 用户说“打测试包”时，先运行 `flutter analyze` 和完整 `flutter test`，再默认生成 Windows 安装版、Android 通用 release APK 和 Android DiLink 兼容 APK；可见版本和内部 build/versionCode 均保持不变，不生成或覆盖 `update.json`。不再发布 Windows 绿色目录/zip，不默认打 iOS，除非用户明确点名。
-- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.5+34`。
+- 用户说“打包”或“打正式包”时，统一执行 GitHub 五端正式发布：先升级可见补丁版本和内部 build/versionCode、整理分平台更新内容，并在本机运行 `flutter analyze` 和完整 `flutter test`；全部通过后才提交并推送全部待发布代码到 GitHub，再创建并推送对应 `v*` 标签触发 GitHub Actions；不得用本机三端产物代替正式 Release。补丁号按 `1.0.10 → 1.0.11` 递增，达到 `1.0.999` 后进位为 `1.1.0`；内部 build/versionCode 每次加 1。当前正式版本为 `1.1.6+35`。
 - 正式发布必须等待 GitHub Actions 的 Windows、Android 通用版、Android DiLink、macOS、iOS 以及最终 Release 任务全部成功；随后从该 GitHub Release 下载五个最终资产到本地 `dist`，以下载后的真实文件验证版本、Android 证书/ABI/签名、文件大小和哈希。只有实物验证通过后，才根据这五个下载文件重新生成 `dist/update.json`；禁止根据构建前文件、本机文件或 Actions 临时产物预填最终大小和哈希。
 - macOS 源码已补齐；“打测试包”仍只在当前 Windows 主机生成 Windows、Android 通用版和 Android DiLink 三个产物，macOS/iOS 不做本地交叉编译。“打包/打正式包”则由 GitHub Actions 的 macOS runner 生成 macOS 和 iOS 产物，共同组成五端正式 Release。
 - GitHub Actions 五端发布工作流位于 `.github/workflows/release.yml`，固定使用 Flutter `3.44.4`；推送 `v*` 标签后并行生成 Windows NSIS 安装器、Android 通用 APK、Android DiLink APK、macOS DMG 和 iOS unsigned IPA，五项成功后自动创建 GitHub Release。iOS 产物固定命名为 `zmusic-ios-unsigned.ipa`，没有 Apple 证书和 Provisioning Profile，必须通过爱思助手、AltStore 或 Sideloadly 自签后安装；macOS 当前仅临时签名且未公证，正式分发仍需配置 Apple Developer 签名与公证凭据。
@@ -136,6 +136,8 @@
 - Windows 启动烟测：启动 Windows Release runner 或安装后的 `zmusic.exe`，等待数秒确认进程存活，再关闭。
 
 ## 变更记录
+
+- 2026-11-02：完成 `1.1.6+35` 五端正式发布；标签 `v1.1.6` 指向 `a72d5d699e284a50774509ac57ca97e60d27374b`，第二轮 GitHub Actions `41391679591` 的 Windows、Android、DiLink、macOS、iOS 和最终 Release 六项全部成功，地址 `https://github.com/zlcece/zmiusc/releases/tag/v1.1.6`。下载最终五个 Release 资产覆盖本地 dist 后验证：Windows 安装器 `1.1.6.35`、内嵌 runner `1.1.6+35`，包含 WebView DLL、不携带 userdata；macOS DMG 完整且 Info.plist 为 `1.1.6/35`；iOS IPA 完整且版本为 `1.1.6/35`、保留音频后台模式、仍未签名。Android 两包均为 `1.1.6/versionCode 35`、minSdk 24、双 ARM ABI、JNI 压缩和 16KB zipalign 通过，通用 target 36/V2、DiLink target 29/V1-only，证书 SHA256 均为 `577bfbc4804601171fb48d191145b2f0d746a22c852124707ccd400dd835c9e3`。最终文件大小/SHA256：Windows `17,053,289` / `42412F565FC2A6287B07A13E04DF497D2CAD062B8353421499DFA390E36D2E8A`；Android `24,402,657` / `62094819E9C27F8219B236FEE6FB32DC66CC8B8ACB122F5DB0752CDDE9B49798`；DiLink `24,394,447` / `46CE502698BC8FD368A6BD74D32E0CF252755B164D5E0FE33E9CB9B70F66971C`；macOS `33,325,630` / `238D9BC1C760D98A2060D4AE14656F2A4266F9EC92D9EF2D6CF7DB3BBE4FA980`；iOS `11,282,256` / `2D1684BA66FAE6FDA6062E5165CB9BAEF257801034B2057D4EBEEE87EDD626F9`，均与 GitHub Asset digest 一致。根据上述文件生成并复核 `dist/update.json` 五个平台节点、双下载地址、分平台说明、大小、MD5/SHA256，清单 SHA256 为 `3BD87BAEF90FB409EFC081632A0DC6E20D8DEF9F0BFA69DCFEBC392DB88FFB66`。验证日志/报告位于 `build/release-1.1.6`；未启动新包影响用户正在运行的客户端，未进行真机安装或真实账号上传联调。GitHub 发布完成，文件服务器的安装包与 `/zmusic/0/update.json` 尚需同步，本轮未上传该服务器；macOS 仍为临时签名未公证，iOS 仍需自行签名。
 
 - 2026-11-02：`1.1.6+35` 首轮 GitHub Actions（run `41390790357`，源码 `49edf71`）的 Android、DiLink、macOS、iOS 四端成功，Windows WebView 插件被 GitHub 新版 MSVC 14.51 的 STL1011 实验性协程弃用检查拦截，最终 Release 未发布。现有兼容宏仅覆盖主程序，对 `flutter_inappwebview_windows_plugin` 单独补充相同宏，保留插件原有 C++/WinRT 编译模式，不修改第三方缓存。验证：CMake 配置/生成成功，检查插件 vcxproj 已包含兼容宏；重新运行 analyze 无问题（27.9 秒），完整测试 162 项全部通过（24 秒），差异检查通过。随后更新尚未发布的 `v1.1.6` 标签并重跑五端；最终结果另记。
 
