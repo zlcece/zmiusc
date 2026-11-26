@@ -44,6 +44,7 @@ migrate_working_dir/
 /.tool-localappdata/
 /LocalLow/
 /dist/
+/config/connection.private.json
 
 # Symbolication related
 app.*.symbols

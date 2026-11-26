@@ -7,6 +7,10 @@ class StreamingAudioCacheProxy {
     this.uri, {
     required this.cacheFile,
     this.headers,
+    this.resolveOrigin,
+    this.checkFailedOrigin,
+    this.isDirectOrigin,
+    this.onResumeRejected,
     this.progressUpdateInterval = const Duration(milliseconds: 100),
     this.originResponseTimeout = const Duration(seconds: 30),
     this.originReadTimeout = const Duration(seconds: 20),
@@ -18,6 +22,89 @@ class StreamingAudioCacheProxy {
   }
 
   final Uri uri;
+  final Uri Function(Uri initial)? resolveOrigin;
+  final Future<void> Function(Uri failed)? checkFailedOrigin;
+  final bool Function(Uri origin)? isDirectOrigin;
+  final void Function(Uri origin)? onResumeRejected;
+  Uri get _origin => resolveOrigin?.call(uri) ?? uri;
+  Uri get currentOrigin => _origin;
+  bool get hasCompletedDownload => _downloadComplete;
+  Uri? _verifiedOrigin;
+  Uri? _requestOrigin;
+  HttpClient? _downloadClient;
+  bool _checkingOrigin = false;
+  bool _switchPending = false;
+  bool get changingOrigin =>
+      isDownloading && (_checkingOrigin || _switchPending);
+  String? _validator;
+  String? _validatorHeader;
+  Uri? _cachedOrigin;
+
+  void refreshOrigin() {
+    if (_canceled ||
+        _downloadComplete ||
+        _downloadedBytes == _sourceLength ||
+        _requestOrigin == null ||
+        _origin == _requestOrigin) {
+      return;
+    }
+    _switchPending = true;
+    _downloadClient?.close(force: true);
+  }
+
+  Future<bool> canResumeFrom(Uri candidate, Future<void> abort) async {
+    if (_downloadComplete) return true;
+    final offset = _downloadedBytes;
+    final previous = _cachedOrigin;
+    if (!isDownloading ||
+        previous == null ||
+        offset == 0 ||
+        _validator == null ||
+        (_sourceLength != null && offset >= _sourceLength!)) {
+      return false;
+    }
+    final client = _newHttpClient();
+    unawaited(abort.then((_) => client.close(force: true)));
+    try {
+      final valid = await (() async {
+        final request = await client.getUrl(candidate);
+        _applyHeaders(request);
+        request.headers
+          ..set(HttpHeaders.rangeHeader, 'bytes=$offset-')
+          ..set(HttpHeaders.ifRangeHeader, _validator!);
+        final response = await request.close();
+        final encoding = response.headers.value(
+          HttpHeaders.contentEncodingHeader,
+        );
+        final type = response.headers.contentType?.toString() ?? _contentType;
+        if (response.statusCode != HttpStatus.partialContent ||
+            (encoding != null && encoding.toLowerCase() != 'identity') ||
+            _rangeEnd(response, offset) == null ||
+            !_matchesRepresentation(response, candidate, type)) {
+          return false;
+        }
+        return (await response.first).isNotEmpty;
+      })().timeout(const Duration(seconds: 6));
+      return _downloadComplete ||
+          (valid && isDownloading && _cachedOrigin == previous);
+    } on Object {
+      return _downloadComplete;
+    } finally {
+      client.close(force: true);
+      _clients.remove(client);
+    }
+  }
+
+  void approveVerifiedOrigin(Uri candidate) {
+    _verifiedOrigin = candidate;
+  }
+
+  bool takeVerifiedOrigin(Uri candidate) {
+    if (_verifiedOrigin != candidate) return false;
+    _verifiedOrigin = null;
+    return true;
+  }
+
   final File cacheFile;
   final Map<String, String>? headers;
   final Duration progressUpdateInterval;
@@ -152,7 +239,11 @@ class StreamingAudioCacheProxy {
       await _sendCachedResponse(request.response, metadata, responseRange);
     } catch (_) {
       if (!_canceled) {
-        request.response.statusCode = HttpStatus.badGateway;
+        try {
+          request.response.statusCode = HttpStatus.badGateway;
+        } on StateError {
+          // The player may already have received the buffered prefix.
+        }
       }
       await _closeResponse(request.response);
     }
@@ -168,28 +259,58 @@ class StreamingAudioCacheProxy {
   Future<void> _downloadToCache() async {
     final attempts = math.max(1, originRequestAttempts);
     for (var attempt = 1; attempt <= attempts; attempt++) {
+      if (_canceled) return;
+      final origin = _origin;
+      _requestOrigin = origin;
       final client = _newHttpClient();
+      _downloadClient = client;
       try {
-        final request = await client.getUrl(uri);
+        final request = await client.getUrl(origin);
         _applyHeaders(request);
         final resumeOffset = _downloadedBytes;
         if (resumeOffset > 0) {
           request.headers.set(HttpHeaders.rangeHeader, 'bytes=$resumeOffset-');
+          if (_validator != null) {
+            request.headers.set(HttpHeaders.ifRangeHeader, _validator!);
+          }
         }
         final response = await request.close().timeout(originResponseTimeout);
+        final encoding = response.headers.value(
+          HttpHeaders.contentEncodingHeader,
+        );
+        if (encoding != null && encoding.toLowerCase() != 'identity') {
+          throw const HttpException('Unexpected encoded audio stream');
+        }
         if (response.statusCode != HttpStatus.ok &&
             response.statusCode != HttpStatus.partialContent) {
           throw HttpException('HTTP ${response.statusCode}', uri: uri);
         }
 
-        final isResuming =
-            resumeOffset > 0 &&
-            response.statusCode == HttpStatus.partialContent;
-        if (!isResuming && resumeOffset > 0) {
-          _downloadedBytes = 0;
+        final isResuming = resumeOffset > 0;
+        int? responseEnd;
+        if (response.statusCode == HttpStatus.partialContent) {
+          responseEnd = _rangeEnd(response, resumeOffset);
+          if (responseEnd == null) {
+            throw const HttpException('Unexpected audio Content-Range');
+          }
+        } else if (isResuming) {
+          // Never truncate a prefix while the player is reading it.
+          throw const HttpException('Origin did not honor the resume request');
         }
-
-        _contentType = response.headers.contentType?.toString() ?? _contentType;
+        final type = response.headers.contentType?.toString() ?? _contentType;
+        if (isResuming && !_matchesRepresentation(response, origin, type)) {
+          throw const HttpException(
+            'Audio representation changed during resume',
+          );
+        }
+        if (!isResuming) {
+          final etag = response.headers.value(HttpHeaders.etagHeader);
+          _validatorHeader = etag != null && etag.startsWith('"')
+              ? HttpHeaders.etagHeader
+              : HttpHeaders.lastModifiedHeader;
+          _validator = response.headers.value(_validatorHeader!);
+        }
+        _contentType = type;
         if (_looksLikeStructuredErrorResponse(_contentType)) {
           throw HttpException(
             'Audio stream returned $_contentType instead of audio.',
@@ -201,19 +322,40 @@ class StreamingAudioCacheProxy {
         _cacheWriter = await cacheFile.open(
           mode: isResuming ? FileMode.append : FileMode.write,
         );
+        if (!isResuming) _cachedOrigin = origin;
         _completeMetadata();
 
-        await for (final chunk in response.timeout(originReadTimeout)) {
+        final monitorDirect =
+            isDirectOrigin?.call(origin) ??
+            (checkFailedOrigin != null && origin == uri);
+        final readTimeout = monitorDirect
+            ? const Duration(seconds: 6)
+            : originReadTimeout;
+        await for (final chunk in response.timeout(readTimeout)) {
           if (_canceled) {
             break;
           }
+          if (origin != _origin) break;
+          final limit = responseEnd ?? _sourceLength;
+          if (limit != null && _downloadedBytes + chunk.length > limit) {
+            throw const HttpException(
+              'Audio stream exceeded its declared length',
+            );
+          }
           await _cacheWriter?.writeFrom(chunk);
+          _cachedOrigin = origin;
           _downloadedBytes += chunk.length;
-          _emitProgress();
+          _switchPending = false;
+          if (_downloadedBytes != _sourceLength) _emitProgress();
           _wakeDataWaiters();
         }
 
         await _closeCacheWriter();
+        if (!_canceled &&
+            origin != _origin &&
+            _downloadedBytes != _sourceLength) {
+          throw const HttpException('Audio route changed');
+        }
         if (!_canceled &&
             _sourceLength != null &&
             _downloadedBytes < _sourceLength!) {
@@ -223,20 +365,40 @@ class StreamingAudioCacheProxy {
           );
         }
         if (!_canceled) {
-          _downloadComplete = true;
+          _finishDownload();
         }
-        if (!_canceled &&
-            (_sourceLength == null || _downloadedBytes >= _sourceLength!)) {
-          _emitProgress(value: 1, force: true);
-        }
-        _wakeDataWaiters();
         return;
       } catch (error) {
         await _closeCacheWriter();
         if (_canceled) {
           return;
         }
-        if (attempt < attempts && _isRetryableOriginError(error)) {
+        if (origin == _origin &&
+            _downloadedBytes > 0 &&
+            _cachedOrigin != null &&
+            _cachedOrigin != origin) {
+          onResumeRejected?.call(origin);
+        }
+        final retryable = _isRetryableOriginError(error);
+        if (origin == _origin && retryable && checkFailedOrigin != null) {
+          _checkingOrigin = true;
+          try {
+            await checkFailedOrigin!(origin);
+          } finally {
+            _checkingOrigin = false;
+          }
+        }
+        if (_canceled) return;
+        if (origin != _origin) {
+          if (_downloadedBytes == _sourceLength) {
+            _finishDownload();
+            return;
+          }
+          _switchPending = true;
+          attempt = 0;
+          continue;
+        }
+        if (attempt < attempts && retryable) {
           continue;
         }
         _downloadError = error;
@@ -246,11 +408,47 @@ class StreamingAudioCacheProxy {
         _wakeDataWaiters();
         return;
       } finally {
+        _downloadClient = null;
         client.close(force: true);
         _clients.remove(client);
         await _closeCacheWriter();
       }
     }
+  }
+
+  void _finishDownload() {
+    _downloadComplete = true;
+    _emitProgress(value: 1, force: true);
+    _wakeDataWaiters();
+  }
+
+  int? _rangeEnd(HttpClientResponse response, int start) {
+    final match = RegExp(
+      r'^bytes (\d+)-(\d+)/(\d+)$',
+    ).firstMatch(response.headers.value(HttpHeaders.contentRangeHeader) ?? '');
+    if (match == null) return null;
+    final end = int.tryParse(match[2]!);
+    final total = int.tryParse(match[3]!);
+    return int.tryParse(match[1]!) == start &&
+            end != null &&
+            total != null &&
+            end >= start &&
+            end < total &&
+            (_sourceLength == null || total == _sourceLength) &&
+            (response.contentLength < 0 ||
+                response.contentLength == end - start + 1)
+        ? end + 1
+        : null;
+  }
+
+  bool _matchesRepresentation(
+    HttpClientResponse response,
+    Uri origin,
+    String type,
+  ) {
+    if (type != _contentType) return false;
+    if (_validator == null) return origin == _cachedOrigin;
+    return response.headers.value(_validatorHeader!) == _validator;
   }
 
   bool _isRetryableOriginError(Object error) {
@@ -291,6 +489,7 @@ class StreamingAudioCacheProxy {
     final sourceLength = metadata.sourceLength;
     final responseEnd = endExclusive ?? sourceLength;
 
+    response.bufferOutput = false;
     response.headers.set(HttpHeaders.contentTypeHeader, metadata.contentType);
     response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
     if (range.isPartial) {
@@ -356,6 +555,7 @@ class StreamingAudioCacheProxy {
         return;
       }
       triedRemoteRangeFallback = true;
+      if (offset < _downloadedBytes) continue;
       await _waitForMoreData();
     }
   }
@@ -376,18 +576,25 @@ class StreamingAudioCacheProxy {
 
     final client = _newHttpClient();
     try {
-      final request = await client.getUrl(uri);
+      final origin = _origin;
+      final request = await client.getUrl(origin);
       _applyHeaders(request);
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$last');
+      if (_validator != null) {
+        request.headers.set(HttpHeaders.ifRangeHeader, _validator!);
+      }
       final remoteResponse = await request.close().timeout(
         originResponseTimeout,
       );
       if (remoteResponse.statusCode != HttpStatus.partialContent) {
-        await remoteResponse.drain<void>();
         return false;
       }
       final contentType =
           remoteResponse.headers.contentType?.toString() ?? _contentType;
+      if (_rangeEnd(remoteResponse, start) != last + 1 ||
+          !_matchesRepresentation(remoteResponse, origin, contentType)) {
+        return false;
+      }
       if (_looksLikeStructuredErrorResponse(contentType)) {
         throw HttpException(
           'Audio range returned $contentType instead of audio.',
@@ -441,6 +648,7 @@ class StreamingAudioCacheProxy {
 
   HttpClient _newHttpClient() {
     final client = HttpClient()
+      ..autoUncompress = false
       ..connectionTimeout = originResponseTimeout
       ..idleTimeout = originReadTimeout;
     _clients.add(client);
@@ -448,6 +656,8 @@ class StreamingAudioCacheProxy {
   }
 
   void _applyHeaders(HttpClientRequest request) {
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+    if (resolveOrigin != null) request.followRedirects = false;
     final requestHeaders = headers;
     if (requestHeaders == null) {
       return;

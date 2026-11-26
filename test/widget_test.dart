@@ -7819,8 +7819,10 @@ plain text
           ..selectedServerId = 'https://music.example.com';
     controller.apiClientFactory = (server) => SubsonicApiClient(
       server: server,
-      httpClient: MockClient((request) {
-        requests.add(request.url.pathSegments.last.replaceFirst('.view', ''));
+      httpClient: MockClient((request) async {
+        final method = request.url.pathSegments.last.replaceFirst('.view', '');
+        if (method.startsWith('getLyrics')) return _subsonicJsonResponse({});
+        requests.add(method);
         return starResponse.future;
       }),
     );

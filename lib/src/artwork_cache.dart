@@ -19,6 +19,7 @@ class ArtworkCacheManager {
 
   final http.Client _httpClient;
   final Future<Directory> Function()? cacheDirectoryProvider;
+  Future<http.Response> Function(http.Client client, Uri uri)? remoteLoader;
   final Map<String, Future<File?>> _inFlight = {};
   final Set<String> _missingLocalArtwork = {};
   final Queue<Completer<void>> _pendingRemoteDownloads = Queue();
@@ -182,7 +183,9 @@ class ArtworkCacheManager {
     await _acquireRemoteDownloadSlot();
     late final http.Response response;
     try {
-      response = await _httpClient.get(uri).timeout(_remoteDownloadTimeout);
+      response =
+          await (remoteLoader?.call(_httpClient, uri) ?? _httpClient.get(uri))
+              .timeout(_remoteDownloadTimeout);
     } finally {
       _releaseRemoteDownloadSlot();
     }

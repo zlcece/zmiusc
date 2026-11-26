@@ -34,6 +34,27 @@ class PlayerController extends ChangeNotifier {
                : const Duration(milliseconds: 600)) {
     _completedSubscription = _audioPlayer.completedStream.listen((completed) {
       if (completed) {
+        final track = currentTrack;
+        final index = _currentIndex;
+        final expectedDuration = duration;
+        if (_playbackRequested &&
+            track != null &&
+            index != null &&
+            expectedDuration != null &&
+            expectedDuration - position > const Duration(seconds: 5) &&
+            shouldMonitorConnection?.call(track) == true) {
+          unawaited(
+            _recoverStalledStartup(
+              index,
+              _playRequestId,
+              _streamingCacheProxy != null ? 1 : 0,
+              bypassStreamingCache: true,
+            ),
+          );
+          return;
+        }
+        _playbackRequested = false;
+        _connectionWatchdog?.cancel();
         unawaited(_handlePlaybackCompleted());
         return;
       }
@@ -69,6 +90,13 @@ class PlayerController extends ChangeNotifier {
   final Random _random = Random();
 
   Future<PlaybackTrack> Function(Track track)? trackResolver;
+  bool Function(Track track)? shouldMonitorConnection;
+  bool Function(Track track)? canRouteConnection;
+  bool Function(Uri origin)? isDirectStreamOrigin;
+  Uri Function(Uri initial)? resolveCacheOrigin;
+  Future<bool> Function(Track track)? connectionRecovery;
+  void Function(Uri origin)? onDirectResumeRejected;
+  bool Function()? activatePendingConnection;
   Future<List<Track>> Function()? sequentialQueueCompletionProvider;
   VoidCallback? onPlaybackSessionChanged;
 
@@ -108,6 +136,9 @@ class PlayerController extends ChangeNotifier {
   int _consecutiveUnplayableSkips = 0;
   double _volume = 0.55;
   Timer? _startupRecoveryTimer;
+  Timer? _connectionWatchdog;
+  bool _playbackRequested = false;
+  int _playbackControlRevision = 0;
   Future<void> _audioOperation = Future.value();
 
   List<Track> get queue {
@@ -158,6 +189,10 @@ class PlayerController extends ChangeNotifier {
   }
 
   bool get isPlaying => _audioPlayer.playing;
+
+  bool get hasOpenPlayback =>
+      currentTrack != null &&
+      (_playbackRequested || !_currentTrackNeedsOpening);
 
   double get volume => _volume;
 
@@ -221,6 +256,8 @@ class PlayerController extends ChangeNotifier {
     required int? currentIndex,
     required PlaybackMode playbackMode,
   }) {
+    _playbackRequested = false;
+    _connectionWatchdog?.cancel();
     _playRequestId++;
     unawaited(_clearNextTrackPrefetch());
     _cancelStartupRecovery();
@@ -344,25 +381,35 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     final index = _currentIndex;
-    if (_currentTrackNeedsOpening && index != null) {
+    if (index != null &&
+        (_currentTrackNeedsOpening ||
+            (position == Duration.zero &&
+                activatePendingConnection?.call() == true))) {
       await _playIndex(index, ++_playRequestId);
       return;
     }
+    _playbackRequested = true;
+    if (index != null) _watchConnection(_playRequestId, index);
     await _audioPlayer.play();
     notifyListeners();
   }
 
   Future<void> pause() async {
+    _playbackControlRevision++;
+    _playbackRequested = false;
+    _connectionWatchdog?.cancel();
+    _cancelStartupRecovery();
     if (currentTrack == null || !_audioPlayer.playing) {
       return;
     }
-    _cancelStartupRecovery();
     unawaited(_clearNextTrackPrefetch());
     await _audioPlayer.pause();
     notifyListeners();
   }
 
   Future<void> stop() async {
+    _playbackRequested = false;
+    _connectionWatchdog?.cancel();
     _playRequestId += 1;
     await _clearNextTrackPrefetch();
     _cancelStartupRecovery();
@@ -437,12 +484,16 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> seek(Duration position) async {
+    _playbackControlRevision++;
     final shouldResume = shouldResumePlaybackAfterSeek(
       wasPlaying: _audioPlayer.playing,
       currentTrack: currentTrack,
     );
     await _audioPlayer.seek(position);
     if (shouldResume) {
+      _playbackRequested = true;
+      final index = _currentIndex;
+      if (index != null) _watchConnection(_playRequestId, index);
       await _audioPlayer.play();
     }
     notifyListeners();
@@ -464,7 +515,10 @@ class PlayerController extends ChangeNotifier {
     int? startupRecoveryAttemptsRemaining,
     bool startNewSession = true,
     bool bypassStreamingCache = false,
+    Duration resumePosition = Duration.zero,
   }) async {
+    _playbackRequested = true;
+    _connectionWatchdog?.cancel();
     _directFallbackRequestId = null;
     final recoveryAttemptsRemaining =
         startupRecoveryAttemptsRemaining ?? _startupRecoveryAttempts;
@@ -482,10 +536,15 @@ class PlayerController extends ChangeNotifier {
     if (startNewSession) {
       _playSessionId++;
     }
+    final routeChanged =
+        startNewSession && activatePendingConnection?.call() == true;
     var track = _queue[index];
-    final prefetchedPlayback = _takeNextTrackPrefetchForPlayback(track);
+    final prefetchedPlayback = routeChanged
+        ? null
+        : _takeNextTrackPrefetchForPlayback(track);
     if (prefetchedPlayback == null) {
-      await _clearNextTrackPrefetch();
+      await _clearNextTrackPrefetch(waitForProxy: routeChanged);
+      if (!_shouldApplyPlaybackRequest(requestId, index)) return;
     }
     var playbackTrack = PlaybackTrack(track: track);
     if (prefetchedPlayback != null) {
@@ -527,6 +586,7 @@ class PlayerController extends ChangeNotifier {
     }
 
     final playbackUri = Uri.tryParse(track.streamUrl);
+    _watchConnection(requestId, index);
     final useStreamingCacheProxy =
         !bypassStreamingCache &&
         playbackUri != null &&
@@ -556,7 +616,7 @@ class PlayerController extends ChangeNotifier {
           final cacheFile = playbackTrack.streamingCacheFile!;
           final proxy =
               prefetchedPlayback?.proxy ??
-              StreamingAudioCacheProxy(playbackUri, cacheFile: cacheFile);
+              _createCacheProxy(track, playbackUri, cacheFile);
           final localUri = prefetchedPlayback?.localUri ?? await proxy.start();
           _watchStreamingCacheProgress(
             proxy,
@@ -583,6 +643,13 @@ class PlayerController extends ChangeNotifier {
         }
         if (!_shouldApplyPlaybackRequest(requestId, index)) {
           return;
+        }
+        if (resumePosition > Duration.zero && _playbackRequested) {
+          await _audioPlayer.seek(resumePosition);
+          if (_shouldApplyPlaybackRequest(requestId, index) &&
+              _playbackRequested) {
+            await _audioPlayer.play();
+          }
         }
       });
     } catch (error, stackTrace) {
@@ -803,9 +870,10 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> _clearNextTrackPrefetch({
     bool clearPreparedShuffleIndex = true,
+    bool waitForProxy = false,
   }) async {
     _nextTrackPrefetchRequestId++;
-    await _nextTrackPrefetchProgressSubscription?.cancel();
+    final subscription = _nextTrackPrefetchProgressSubscription;
     _nextTrackPrefetchProgressSubscription = null;
     final prefetch = _nextTrackPrefetch;
     _nextTrackPrefetch = null;
@@ -813,19 +881,26 @@ class PlayerController extends ChangeNotifier {
       _preparedShuffleNextIndex = null;
     }
     final cancellation = prefetch?.proxy.cancel();
+    await subscription?.cancel();
     if (cancellation == null) {
       return;
     }
-    unawaited(
-      cancellation.catchError((Object error, StackTrace stackTrace) {
-        AppLogger.instance.warning(
-          'cache',
-          '关闭下一首预取代理失败',
-          error: error,
-          stackTrace: stackTrace,
-        );
-      }),
-    );
+    final closed = waitForProxy
+        ? cancellation.timeout(const Duration(seconds: 2))
+        : cancellation;
+    final handled = closed.catchError((Object error, StackTrace stackTrace) {
+      AppLogger.instance.warning(
+        'cache',
+        '关闭下一首预取代理失败',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    });
+    if (waitForProxy) {
+      await handled;
+    } else {
+      unawaited(handled);
+    }
   }
 
   _NextTrackPrefetch? _takeNextTrackPrefetchForPlayback(Track track) {
@@ -899,7 +974,7 @@ class PlayerController extends ChangeNotifier {
           (uri.scheme != 'http' && uri.scheme != 'https')) {
         return;
       }
-      final proxy = StreamingAudioCacheProxy(uri, cacheFile: cacheFile);
+      final proxy = _createCacheProxy(playbackTrack.track, uri, cacheFile);
       final localUri = await proxy.start();
       if (!_shouldContinueNextTrackPrefetch(requestId, key)) {
         await proxy.cancel();
@@ -1075,7 +1150,8 @@ class PlayerController extends ChangeNotifier {
           activeProxy != null &&
           (scheduledProxy == null || identical(activeProxy, scheduledProxy)) &&
           activeProxy.isDownloading &&
-          downloadedBytes > scheduledProxyBytes &&
+          (downloadedBytes > scheduledProxyBytes ||
+              activeProxy.changingOrigin) &&
           progressExtensionsRemaining > 0) {
         AppLogger.instance.info(
           'player',
@@ -1108,13 +1184,18 @@ class PlayerController extends ChangeNotifier {
     int recoveryAttemptsRemaining, {
     required bool bypassStreamingCache,
   }) async {
-    if (!_shouldApplyPlaybackRequest(requestId, index)) {
+    if (!_playbackRequested || !_shouldApplyPlaybackRequest(requestId, index)) {
       return;
     }
     if (_startupRecoveryInFlightRequestId == requestId) {
       return;
     }
     _startupRecoveryInFlightRequestId = requestId;
+    final controlRevision = _playbackControlRevision;
+    bool stillCurrent() =>
+        _playbackRequested &&
+        controlRevision == _playbackControlRevision &&
+        _shouldApplyPlaybackRequest(requestId, index);
     final proxy = _streamingCacheProxy;
     final proxyDownloadedBytes = proxy?.downloadedBytes;
     AppLogger.instance.warning(
@@ -1137,13 +1218,38 @@ class PlayerController extends ChangeNotifier {
           : null;
       if (cacheCompletion != null) {
         await cacheCompletion;
-        if (!_shouldApplyPlaybackRequest(requestId, index)) {
+        if (!stillCurrent()) {
           return;
         }
       }
       if (completedCacheFile != null &&
           isCompletedAudioCacheFile(completedCacheFile)) {
         await _recoverFromCompletedCache(index, requestId, completedCacheFile);
+        return;
+      }
+      final recoverConnection = connectionRecovery;
+      final track = currentTrack;
+      final resumePosition = _audioPlayer.position;
+      if (recoverConnection != null &&
+          track != null &&
+          await recoverConnection(track)) {
+        if (!stillCurrent()) {
+          return;
+        }
+        await _clearNextTrackPrefetch();
+        if (!stillCurrent()) {
+          return;
+        }
+        AppLogger.instance.info('player', '已切换到 relay，正在恢复当前歌曲与播放位置');
+        await _playIndex(
+          index,
+          ++_playRequestId,
+          startNewSession: false,
+          resumePosition: resumePosition,
+        );
+        return;
+      }
+      if (!stillCurrent()) {
         return;
       }
       if (recoveryAttemptsRemaining <= 0) {
@@ -1161,6 +1267,7 @@ class PlayerController extends ChangeNotifier {
         startupRecoveryAttemptsRemaining: recoveryAttemptsRemaining - 1,
         startNewSession: false,
         bypassStreamingCache: bypassStreamingCache,
+        resumePosition: resumePosition,
       );
     } finally {
       if (_startupRecoveryInFlightRequestId == requestId) {
@@ -1178,6 +1285,8 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     final failureRequestId = ++_playRequestId;
+    _playbackRequested = false;
+    _connectionWatchdog?.cancel();
     _cancelStartupRecovery();
     await _interruptSupersededOpening(failureRequestId);
     if (!_shouldApplyPlaybackRequest(failureRequestId, index)) {
@@ -1260,6 +1369,158 @@ class PlayerController extends ChangeNotifier {
   void _cancelStartupRecovery() {
     _startupRecoveryTimer?.cancel();
     _startupRecoveryTimer = null;
+  }
+
+  StreamingAudioCacheProxy _createCacheProxy(Track track, Uri uri, File file) {
+    final routeManaged = canRouteConnection?.call(track) == true;
+    late final StreamingAudioCacheProxy proxy;
+    var origin = uri;
+    proxy = StreamingAudioCacheProxy(
+      uri,
+      cacheFile: file,
+      resolveOrigin: routeManaged
+          ? (_) {
+              final next = resolveCacheOrigin?.call(origin) ?? origin;
+              if (next != origin &&
+                  isDirectStreamOrigin?.call(next) == true &&
+                  !proxy.takeVerifiedOrigin(next)) {
+                return origin;
+              }
+              return origin = next;
+            }
+          : null,
+      isDirectOrigin: routeManaged ? isDirectStreamOrigin : null,
+      onResumeRejected: routeManaged ? onDirectResumeRejected : null,
+      checkFailedOrigin: routeManaged
+          ? (failed) async {
+              if (isDirectStreamOrigin?.call(failed) == true) {
+                await connectionRecovery?.call(
+                  track.copyWith(streamUrl: failed.toString()),
+                );
+              }
+            }
+          : null,
+    );
+    return proxy;
+  }
+
+  Future<bool Function()?> preparePlaybackConnectionSwitch(
+    Uri Function(Uri) resolveCandidate,
+    Future<void> abort,
+  ) async {
+    final track = currentTrack;
+    final index = _currentIndex;
+    final requestId = _playRequestId;
+    if (!hasOpenPlayback ||
+        track == null ||
+        index == null ||
+        _activePlaybackCacheFile != null ||
+        canRouteConnection?.call(track) != true) {
+      return () {
+        if (requestId != _playRequestId) return false;
+        unawaited(_clearNextTrackPrefetch());
+        return true;
+      };
+    }
+    final controlRevision = _playbackControlRevision;
+    final proxy = _streamingCacheProxy;
+    bool stillCurrent() =>
+        identical(proxy, _streamingCacheProxy) &&
+        _playbackControlRevision == controlRevision &&
+        _shouldApplyPlaybackRequest(requestId, index);
+    if (proxy == null) {
+      if (_currentTrackNeedsOpening || !_playbackRequested) return null;
+      final uri = Uri.parse(track.streamUrl);
+      final candidate = resolveCandidate(uri);
+      if (candidate == uri) return null;
+      return () {
+        if (!stillCurrent() || !_playbackRequested) return false;
+        unawaited(_clearNextTrackPrefetch());
+        scheduleMicrotask(() {
+          if (!stillCurrent() ||
+              !_playbackRequested ||
+              resolveCacheOrigin?.call(uri) != candidate) {
+            return;
+          }
+          unawaited(
+            _playIndex(
+              index,
+              ++_playRequestId,
+              startNewSession: false,
+              bypassStreamingCache: true,
+              resumePosition: position,
+            ),
+          );
+        });
+        return true;
+      };
+    }
+    final origin = proxy.currentOrigin;
+    final candidate = resolveCandidate(origin);
+    if (candidate == origin || !await proxy.canResumeFrom(candidate, abort)) {
+      return null;
+    }
+    return () {
+      if (!stillCurrent()) return false;
+      unawaited(_clearNextTrackPrefetch());
+      if (!proxy.hasCompletedDownload) {
+        proxy.approveVerifiedOrigin(candidate);
+        _queue[index] = track.copyWith(streamUrl: candidate.toString());
+        scheduleMicrotask(() {
+          if (stillCurrent() && _playbackRequested) {
+            _watchConnection(requestId, index);
+          }
+        });
+      }
+      return true;
+    };
+  }
+
+  void refreshCacheOrigins() {
+    _streamingCacheProxy?.refreshOrigin();
+    _nextTrackPrefetch?.proxy.refreshOrigin();
+  }
+
+  // The startup timer stops after audio begins. Keep a lightweight watchdog
+  // for a direct connection that disappears in the middle of a song.
+  void _watchConnection(int requestId, int index) {
+    _connectionWatchdog?.cancel();
+    final track = currentTrack;
+    if (track == null || shouldMonitorConnection?.call(track) != true) return;
+    var position = _audioPlayer.position;
+    var bytes = _streamingCacheProxy?.downloadedBytes ?? 0;
+    var stalledTicks = 0;
+    _connectionWatchdog = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (!_playbackRequested ||
+          !_shouldApplyPlaybackRequest(requestId, index)) {
+        timer.cancel();
+        return;
+      }
+      final nextPosition = _audioPlayer.position;
+      final nextBytes = _streamingCacheProxy?.downloadedBytes ?? 0;
+      if (nextPosition != position || nextBytes > bytes) {
+        position = nextPosition;
+        bytes = nextBytes;
+        stalledTicks = 0;
+        return;
+      }
+      // Cached audio doesn't require a network route. Its normal decoder
+      // recovery remains responsible for any playback problem.
+      if ((_streamingCacheProgress ?? 0) >= 1 ||
+          _streamingCacheProxy?.changingOrigin == true) {
+        return;
+      }
+      if (++stalledTicks < 2) return;
+      stalledTicks = 0;
+      unawaited(
+        _recoverStalledStartup(
+          index,
+          requestId,
+          _streamingCacheProxy != null ? 1 : 0,
+          bypassStreamingCache: true,
+        ),
+      );
+    });
   }
 
   void _emitBufferedPosition() {
@@ -1437,6 +1698,12 @@ class PlayerController extends ChangeNotifier {
         currentIndex: currentIndex,
         queueLength: _queue.length,
       )) {
+        if (activatePendingConnection?.call() == true) {
+          await _playIndex(currentIndex!, ++_playRequestId);
+          return;
+        }
+        _playbackRequested = true;
+        _watchConnection(_playRequestId, currentIndex!);
         _playSessionId++;
         await _audioPlayer.seek(Duration.zero);
         await _audioPlayer.play();
@@ -1544,6 +1811,8 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _playbackRequested = false;
+    _connectionWatchdog?.cancel();
     _cancelStartupRecovery();
     _completedSubscription.cancel();
     _durationSubscription.cancel();

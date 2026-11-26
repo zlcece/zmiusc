@@ -103,6 +103,7 @@ class AiServiceConfig {
 class AppSettings {
   const AppSettings({
     this.musicExtUrl = defaultMusicExtUrl,
+    this.preferP2p = true,
     this.cacheDirectory = '',
     this.cacheSizeBytes = defaultCacheSizeBytes,
     this.logoPath = '',
@@ -132,6 +133,7 @@ class AppSettings {
   });
 
   final String musicExtUrl;
+  final bool preferP2p;
   final String cacheDirectory;
   final int cacheSizeBytes;
   final String logoPath;
@@ -291,6 +293,7 @@ class AppSettings {
 
   AppSettings copyWith({
     String? musicExtUrl,
+    bool? preferP2p,
     String? cacheDirectory,
     int? cacheSizeBytes,
     String? logoPath,
@@ -320,6 +323,7 @@ class AppSettings {
   }) {
     return AppSettings(
       musicExtUrl: musicExtUrl ?? this.musicExtUrl,
+      preferP2p: preferP2p ?? this.preferP2p,
       cacheDirectory: cacheDirectory ?? this.cacheDirectory,
       cacheSizeBytes: cacheSizeBytes ?? this.cacheSizeBytes,
       logoPath: logoPath ?? this.logoPath,
@@ -362,6 +366,7 @@ class AppSettings {
   Map<String, Object?> toJson() {
     return {
       'musicExtUrl': musicExtUrl,
+      'preferP2p': preferP2p,
       'cacheDirectory': cacheDirectory,
       'cacheSizeBytes': cacheSizeBytes,
       'logoPath': logoPath,
@@ -427,6 +432,7 @@ class AppSettings {
     }
     return AppSettings(
       musicExtUrl: _readString(json, 'musicExtUrl'),
+      preferP2p: _readBool(json, 'preferP2p', fallback: true),
       cacheDirectory: _readString(json, 'cacheDirectory'),
       cacheSizeBytes: clampCacheSize(_readInt(json, 'cacheSizeBytes')),
       logoPath: logoPath,

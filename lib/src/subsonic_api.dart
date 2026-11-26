@@ -8,6 +8,7 @@ import 'package:http/io_client.dart';
 
 import 'app_logger.dart';
 import 'models.dart';
+import 'navidrome_connection.dart';
 
 class SubsonicApiException implements Exception {
   const SubsonicApiException(this.message);
@@ -19,8 +20,11 @@ class SubsonicApiException implements Exception {
 }
 
 class SubsonicApiClient {
-  SubsonicApiClient({required this.server, http.Client? httpClient})
-    : _httpClient = httpClient ?? _sharedHttpClient;
+  SubsonicApiClient({
+    required this.server,
+    http.Client? httpClient,
+    this.connection,
+  }) : _httpClient = httpClient ?? _sharedHttpClient;
 
   static const _apiVersion = '1.16.1';
   static const _clientName = 'zmusic';
@@ -33,6 +37,7 @@ class SubsonicApiClient {
 
   final ServerConfig server;
   final http.Client _httpClient;
+  final NavidromeConnection? connection;
   final Random _random = Random.secure();
 
   static http.Client _createSharedHttpClient() {
@@ -475,7 +480,9 @@ class SubsonicApiClient {
     final canRetry = _isReadOnlyMethod(method);
     for (var attempt = 0; ; attempt += 1) {
       try {
-        final response = await _httpClient.get(uri);
+        final response =
+            await (connection?.get(_httpClient, uri, allowReplay: canRetry) ??
+                _httpClient.get(uri));
         if (canRetry &&
             attempt < _readRetryDelays.length &&
             _isRetryableStatusCode(response.statusCode)) {

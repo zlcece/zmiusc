@@ -16,6 +16,7 @@ import 'app_logger.dart';
 import 'library_store.dart';
 import 'local_library.dart';
 import 'models.dart';
+import 'navidrome_connection.dart';
 import 'player_controller.dart';
 import 'playback_source.dart';
 import 'playlist_sync.dart';
@@ -58,16 +59,29 @@ class AppController extends ChangeNotifier {
     AppUpdateService? updateService,
     PlaylistSyncService? playlistSyncService,
     AiRecommendationClient? aiRecommendationClient,
+    NavidromeConnection? connection,
   }) : cacheManager = cacheManager ?? AudioCacheManager(),
        artworkCacheManager =
            artworkCacheManager ?? ArtworkCacheManager.instance,
        updateService = updateService ?? AppUpdateService(),
        playlistSyncService = playlistSyncService ?? PlaylistSyncService(),
        aiRecommendationClient =
-           aiRecommendationClient ?? AiRecommendationClient() {
+           aiRecommendationClient ?? AiRecommendationClient(),
+       connection = connection ?? NavidromeConnection() {
+    apiClientFactory = (server) =>
+        SubsonicApiClient(server: server, connection: this.connection);
+    this.connection.addListener(_handleConnectionChanged);
+    this.artworkCacheManager.remoteLoader = this.connection.get;
     player.addListener(_handlePlayerChanged);
     _positionSubscription = player.positionStream.listen(_handlePlayerPosition);
     player.trackResolver = _resolveTrackForPlayback;
+    player.shouldMonitorConnection = _usesDirectConnection;
+    player.canRouteConnection = _canRoutePlaybackConnection;
+    player.isDirectStreamOrigin = this.connection.wasDirect;
+    player.resolveCacheOrigin = this.connection.currentStreamOrigin;
+    player.connectionRecovery = _recoverPlaybackConnection;
+    player.onDirectResumeRejected = this.connection.rejectDirectResume;
+    player.activatePendingConnection = this.connection.activatePendingP2p;
     player.sequentialQueueCompletionProvider =
         _loadRandomQueueAfterSequentialCompletion;
     player.onPlaybackSessionChanged = _handlePlaybackSessionChanged;
@@ -81,8 +95,8 @@ class AppController extends ChangeNotifier {
   final AppUpdateService updateService;
   final PlaylistSyncService playlistSyncService;
   final AiRecommendationClient aiRecommendationClient;
-  SubsonicApiClient Function(ServerConfig server) apiClientFactory = (server) =>
-      SubsonicApiClient(server: server);
+  final NavidromeConnection connection;
+  late SubsonicApiClient Function(ServerConfig server) apiClientFactory;
 
   List<ServerConfig> servers = [];
   List<Track> customTracks = [];
@@ -249,6 +263,10 @@ class AppController extends ChangeNotifier {
         await store.loadLoginUsername() ?? restoredServer?.username ?? '';
     loginPassword =
         await store.loadLoginPassword() ?? restoredServer?.password ?? '';
+    await connection.prepare(
+      restoredServer?.normalizedBaseUrl ?? loginServerUrl,
+      preferP2p: settings.preferP2p,
+    );
     if (restoredServers.length != servers.length) {
       for (final server in restoredServers) {
         if (server.id != restoredServer?.id) {
@@ -338,6 +356,7 @@ class AppController extends ChangeNotifier {
     statusMessage = null;
     notifyListeners();
     try {
+      await connection.prepare(normalizedUrl, preferP2p: settings.preferP2p);
       await apiClientFactory(server).ping();
       await store.saveServers([server]);
       await store.saveSelectedServerId(server.id);
@@ -387,6 +406,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> logout() async {
     AppLogger.instance.info('account', '退出当前账号');
+    connection.reset();
     await _clearPlaybackSession();
     await _clearDailyRecommendation();
     _clearCasualListening();
@@ -414,6 +434,9 @@ class AppController extends ChangeNotifier {
   Future<void> updateSettings(AppSettings value) async {
     final previousSettings = settings;
     settings = value.normalized;
+    if (previousSettings.preferP2p != settings.preferP2p) {
+      connection.setPreference(preferP2p: settings.preferP2p);
+    }
     final aiRecommendationBehaviorChanged = _aiRecommendationBehaviorChanged(
       previousSettings,
       settings,
@@ -459,6 +482,31 @@ class AppController extends ChangeNotifier {
     if (shouldReloadHomeOverview && selectedServer != null) {
       unawaited(loadLibraryOverview());
     }
+  }
+
+  Future<String?> setConnectionPreference({required bool preferP2p}) async {
+    if (!isAuthenticated || !connection.supportsP2p) return null;
+    if (settings.preferP2p != preferP2p) {
+      await updateSettings(settings.copyWith(preferP2p: preferP2p));
+    }
+    if (!isAuthenticated || settings.preferP2p != preferP2p) return null;
+    if (preferP2p) return retryP2p();
+    return '已切换到中继。';
+  }
+
+  Future<String?> retryP2p() async {
+    if (!isAuthenticated) return null;
+    final reachable = await connection.retryP2p(
+      preparePlaybackSwitch: player.preparePlaybackConnectionSwitch,
+    );
+    if (reachable == null || !settings.preferP2p || !isAuthenticated) {
+      return null;
+    }
+    if (!reachable) return 'P2P 暂不可用，继续使用中继。';
+    if (connection.hasPendingP2p) {
+      return '当前歌曲继续使用中继，下一首将使用 P2P。';
+    }
+    return connection.isP2p ? '已切换到 P2P。' : 'P2P 切换失败，继续使用中继。';
   }
 
   String createAiServiceId() {
@@ -2435,9 +2483,7 @@ class AppController extends ChangeNotifier {
       return;
     }
 
-    final lyrics = await SubsonicApiClient(
-      server: server,
-    ).lyricsForTrack(target);
+    final lyrics = await apiClientFactory(server).lyricsForTrack(target);
     final trimmed = lyrics.trim();
     if (trimmed.isEmpty) {
       return;
@@ -2690,10 +2736,39 @@ class AppController extends ChangeNotifier {
       return track;
     }
 
-    final streamUrl = SubsonicApiClient(
-      server: server,
-    ).streamUri(songId, audioFormat: track.audioFormat).toString();
+    final streamUrl = connection
+        .resolve(
+          apiClientFactory(
+            server,
+          ).streamUri(songId, audioFormat: track.audioFormat),
+        )
+        .toString();
     return track.copyWith(streamUrl: streamUrl);
+  }
+
+  bool _usesDirectConnection(Track track) {
+    if (!_canRoutePlaybackConnection(track)) return false;
+    final uri = Uri.tryParse(track.streamUrl);
+    return uri != null && connection.wasDirect(uri);
+  }
+
+  bool _canRoutePlaybackConnection(Track track) {
+    if (track.sourceType != MusicSourceType.subsonic ||
+        track.sourceServerId != selectedServer?.id) {
+      return false;
+    }
+    final uri = Uri.tryParse(track.streamUrl);
+    return uri != null && connection.canRouteStream(uri);
+  }
+
+  Future<bool> _recoverPlaybackConnection(Track track) {
+    if (!_usesDirectConnection(track)) return Future.value(false);
+    return connection.recover(Uri.parse(track.streamUrl));
+  }
+
+  void _handleConnectionChanged() {
+    player.refreshCacheOrigins();
+    notifyListeners();
   }
 
   Future<String> _resolveRadioStreamUrl(String streamUrl) async {
@@ -2755,6 +2830,7 @@ class AppController extends ChangeNotifier {
     }
     final track = player.currentTrack;
     if (track == null) {
+      connection.activatePendingP2p();
       _lastLyricTrackId = null;
       _resetPlaybackScrobbleSession();
       return;
@@ -3070,6 +3146,16 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    connection.removeListener(_handleConnectionChanged);
+    artworkCacheManager.remoteLoader = null;
+    player.shouldMonitorConnection = null;
+    player.canRouteConnection = null;
+    player.isDirectStreamOrigin = null;
+    player.resolveCacheOrigin = null;
+    player.connectionRecovery = null;
+    player.onDirectResumeRejected = null;
+    player.activatePendingConnection = null;
+    connection.dispose();
     player.sequentialQueueCompletionProvider = null;
     player.onPlaybackSessionChanged = null;
     player.removeListener(_handlePlayerChanged);

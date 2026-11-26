@@ -505,6 +505,7 @@ class _HomePageState extends State<HomePage> {
                       onChanged: _selectHomeTab,
                     ),
                     flexibleSpace: const _GlassAppBarBackground(),
+                    actions: [_buildConnectionAction()],
                   ),
             body: Stack(
               children: [
@@ -1229,6 +1230,62 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     _showLibraryStatus(widget.controller.statusMessage);
+  }
+
+  Widget _buildConnectionAction() {
+    final controller = widget.controller;
+    final connection = controller.connection;
+    final canSwitch =
+        controller.isAuthenticated &&
+        connection.supportsP2p &&
+        !connection.retrying &&
+        !connection.hasPendingP2p;
+    var tooltip = connection.isP2p ? '公网直连' : '中继连接';
+    if (connection.retrying) {
+      tooltip = '正在检测 P2P';
+    } else if (connection.hasPendingP2p) {
+      tooltip = '下一首将使用 P2P';
+    } else if (canSwitch) {
+      tooltip += connection.isP2p ? '，点击切换到中继' : '，点击尝试 P2P';
+    }
+
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: canSwitch
+            ? () async {
+                final message = await controller.setConnectionPreference(
+                  preferP2p: !connection.isP2p,
+                );
+                if (mounted && message != null) {
+                  _showSourceMessage(context, message);
+                }
+              }
+            : null,
+        child: Center(
+          widthFactor: 1,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: _CompactLabelChip(
+              label: connection.isP2p ? 'P2P' : 'RLY',
+              scale: 2.25,
+              constraints: const BoxConstraints(minWidth: 52, minHeight: 22.5),
+              palette: connection.isP2p
+                  ? const _AudioFormatPalette(
+                      background: Color(0xFF1E6F52),
+                      foreground: Color(0xFFE9FFF4),
+                      border: Color(0xFF62D9A3),
+                    )
+                  : const _AudioFormatPalette(
+                      background: Color(0xFF4B5563),
+                      foreground: Color(0xFFF3F4F6),
+                      border: Color(0xFF9CA3AF),
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _handleControllerChanged() {
@@ -2025,6 +2082,8 @@ class _SettingsPageState extends State<_SettingsPage> {
                         ),
                       ],
                     ),
+                    if (widget.controller.connection.supportsP2p)
+                      _buildConnectionSettings(),
                     _SettingsSection(
                       title: '首页布局',
                       children: [
@@ -2417,15 +2476,19 @@ class _SettingsPageState extends State<_SettingsPage> {
                                 );
                               }
                             },
-                            child: Column(
+                            child: Row(
                               children: const [
-                                RadioListTile<CloseButtonBehavior>(
-                                  value: CloseButtonBehavior.exit,
-                                  title: Text('关闭按钮直接退出'),
+                                Expanded(
+                                  child: RadioListTile<CloseButtonBehavior>(
+                                    value: CloseButtonBehavior.exit,
+                                    title: Text('关闭按钮直接退出'),
+                                  ),
                                 ),
-                                RadioListTile<CloseButtonBehavior>(
-                                  value: CloseButtonBehavior.minimizeToTray,
-                                  title: Text('关闭按钮最小化到托盘'),
+                                Expanded(
+                                  child: RadioListTile<CloseButtonBehavior>(
+                                    value: CloseButtonBehavior.minimizeToTray,
+                                    title: Text('关闭按钮最小化到托盘'),
+                                  ),
                                 ),
                               ],
                             ),
@@ -2589,6 +2652,67 @@ class _SettingsPageState extends State<_SettingsPage> {
     if (mounted) {
       setState(() => _settings = widget.controller.settings);
     }
+  }
+
+  Widget _buildConnectionSettings() {
+    final connection = widget.controller.connection;
+    return _SettingsSection(
+      title: '连接方式',
+      children: [
+        RadioGroup<bool>(
+          groupValue: _settings.preferP2p,
+          onChanged: (preferP2p) async {
+            if (preferP2p == null) return;
+            final message = await widget.controller.setConnectionPreference(
+              preferP2p: preferP2p,
+            );
+            if (mounted && message != null) {
+              _showSourceMessage(context, message);
+            }
+          },
+          child: Row(
+            children: const [
+              Expanded(
+                child: RadioListTile<bool>(
+                  value: true,
+                  title: Text('优先点对点(P2P)'),
+                ),
+              ),
+              Expanded(
+                child: RadioListTile<bool>(
+                  value: false,
+                  title: Text('优先中继(RELAY)'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_settings.preferP2p && !connection.isP2p)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: TextButton(
+                onPressed: connection.retrying || connection.hasPendingP2p
+                    ? null
+                    : _retryP2p,
+                child: Text(
+                  connection.retrying
+                      ? '正在检测 P2P…'
+                      : connection.hasPendingP2p
+                      ? '下一首将使用 P2P'
+                      : '重新尝试 P2P',
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _retryP2p() async {
+    final message = await widget.controller.retryP2p();
+    if (mounted && message != null) _showSourceMessage(context, message);
   }
 
   Future<void> _setAiRecommendationEnabled(bool enabled) async {
@@ -8496,23 +8620,51 @@ class _AudioFormatChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final palette = _AudioFormatPalette.forFormat(format);
+    return _CompactLabelChip(
+      label: format,
+      palette: _AudioFormatPalette.forFormat(format),
+    );
+  }
+}
+
+class _CompactLabelChip extends StatelessWidget {
+  const _CompactLabelChip({
+    required this.label,
+    required this.palette,
+    this.scale = 1,
+    this.constraints = const BoxConstraints(),
+  });
+
+  final String label;
+  final _AudioFormatPalette palette;
+  final double scale;
+  final BoxConstraints constraints;
+
+  @override
+  Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: palette.background,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: palette.border, width: 0.7),
+        borderRadius: BorderRadius.circular(3 * scale),
+        border: Border.all(color: palette.border, width: 0.7 * scale),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
-        child: Text(
-          format,
-          maxLines: 1,
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-            color: palette.foreground,
-            fontSize: 8,
-            height: 1,
-            fontWeight: FontWeight.w700,
+      child: ConstrainedBox(
+        constraints: constraints,
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 3 * scale, vertical: scale),
+          child: Center(
+            widthFactor: 1,
+            heightFactor: 1,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: palette.foreground,
+                fontSize: 8 * scale,
+                height: 1,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
         ),
       ),

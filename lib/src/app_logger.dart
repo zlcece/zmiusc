@@ -249,7 +249,7 @@ class AppLogger extends ChangeNotifier {
 String _sanitize(String value) {
   var result = value.replaceAllMapped(
     RegExp(
-      r'([?&](?:u|p|t|s|token|password|auth|authorization|api[_-]?key|key)=)[^&\s]+',
+      r'([?&](?:u|p|t|s|token|openToken|password|auth|authorization|api[_-]?key|key)=)[^&\s]+',
       caseSensitive: false,
     ),
     (match) => '${match.group(1)}<redacted>',
